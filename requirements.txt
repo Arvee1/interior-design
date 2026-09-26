@@ -1,0 +1,7 @@
+langchain>=1.4
+langchain-anthropic>=1.7
+streamlit>=1.50
+pillow>=10.1
+pydantic>=2.7
+python-dotenv>=1.0
+replicate>=1.0

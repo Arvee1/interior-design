@@ -14,7 +14,7 @@ It is built on LangChain `create_agent`. The agent has:
 python -m venv .venv
 # Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env               # then put your ANTHROPIC_API_KEY in .env
+cp .env.example .env               # then put your REPLICATE_API_TOKEN in .env
 streamlit run app.py
 ```
 
@@ -49,7 +49,7 @@ Set `RESTYLE_MODEL` in `.env` to any LangChain `provider:model` string that supp
 Push the repo to GitHub, excluding `.env`. Create the app in Streamlit Cloud and add this under **Secrets**:
 
 ```toml
-ANTHROPIC_API_KEY = "sk-ant-..."
+REPLICATE_API_TOKEN = "r8_..."
 ```
 
 The app reads the key from Streamlit secrets automatically. If no key is found anywhere, it shows a key field in the sidebar.

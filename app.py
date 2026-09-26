@@ -29,8 +29,12 @@ def _secret(name: str):
     except Exception:
         return None
 
-if not os.getenv("ANTHROPIC_API_KEY") and _secret("ANTHROPIC_API_KEY"):
-    os.environ["ANTHROPIC_API_KEY"] = _secret("ANTHROPIC_API_KEY")
+for _name in ("ANTHROPIC_API_KEY", "REPLICATE_API_TOKEN"):
+    if not os.getenv(_name) and _secret(_name):
+        os.environ[_name] = _secret(_name)
+
+KEY_ENV, KEY_LABEL = (("REPLICATE_API_TOKEN", "Replicate API token") if RoomDesigner().provider == "replicate"
+                      else ("ANTHROPIC_API_KEY", "Anthropic API key"))
 
 # ---------------------------------------------------------------- state
 defaults = {
@@ -130,13 +134,13 @@ with st.sidebar:
     st.text_area("Anything to know?", key="pref_notes", height=110,
                  placeholder="e.g. Keeping the grey sofa. Two kids and a dog. Renting, so no painting.")
     st.divider()
-    if os.getenv("ANTHROPIC_API_KEY"):
+    if os.getenv(KEY_ENV):
         st.caption(f"Model: `{RoomDesigner().model}`")
     else:
-        key = st.text_input("Anthropic API key", type="password",
-                            help="Or set ANTHROPIC_API_KEY in .env / Streamlit secrets.")
+        key = st.text_input(KEY_LABEL, type="password",
+                            help=f"Or set {KEY_ENV} in .env / Streamlit secrets.")
         if key:
-            os.environ["ANTHROPIC_API_KEY"] = key
+            os.environ[KEY_ENV] = key
             st.rerun()
     if S.concepts:
         st.button("Start with a new photo", on_click=start_over, use_container_width=True)
