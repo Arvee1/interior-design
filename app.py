@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from restyle.agent import RoomDesigner, prepare_image  # noqa: E402
+from restyle.agent import RoomDesigner, prepare_image, render_after  # noqa: E402
 from restyle.prompts import Preferences  # noqa: E402
 from restyle.render import draw_pins, palette_html, shopping_list_csv  # noqa: E402
 from restyle.tools import STYLE_GUIDES  # noqa: E402
@@ -109,6 +109,7 @@ def toggle_keep(idx: int, item_id: str):
 def remove_item(idx: int, item_id: str):
     S.history[idx].append(copy.deepcopy(S.concepts[idx]))
     S.concepts[idx]["items"] = [i for i in S.concepts[idx]["items"] if i["id"] != item_id]
+    S.concepts[idx].pop("after_image", None)  # the picture no longer matches the list
     S.rev += 1
 
 
@@ -180,6 +181,11 @@ if S.pending:
             S.concepts.append(clean_concept(out))
             S.history.append([])
             S.active = len(S.concepts) - 1
+        elif action["type"] == "render":
+            if not os.getenv("REPLICATE_API_TOKEN"):
+                raise RuntimeError("the after picture needs REPLICATE_API_TOKEN in .env or Streamlit secrets.")
+            with st.spinner(f"Picturing your room as {S.concepts[idx]['name']}. This takes about 10-20 seconds..."):
+                S.concepts[idx]["after_image"] = render_after(S.image_b64, S.concepts[idx])
         S.rev += 1
         S.highlight = None
     except Exception as e:  # surface API / validation errors in the UI
@@ -236,8 +242,25 @@ items = c["items"]
 photo_col, detail_col = st.columns([1.1, 1], gap="large")
 
 with photo_col:
-    st.image(draw_pins(S.image, items, S.highlight),
-             caption="Numbered pins show where each piece would go. Green ring = kept.")
+    ba_tab, pins_tab = st.tabs(["Before & after", "Where things go"])
+    with ba_tab:
+        before_col, after_col = st.columns(2)
+        with before_col:
+            st.image(S.image, caption="Before")
+        with after_col:
+            if c.get("after_image"):
+                st.image(c["after_image"], caption=f"After: {c['name']}")
+            else:
+                st.info("See this concept in your room.")
+                st.button("Generate after picture", type="primary", on_click=queue,
+                          args=({"type": "render"},), use_container_width=True, key=f"render_{S.rev}")
+        if c.get("after_image"):
+            st.caption("AI impression of the concept, not an exact render of every listed piece.")
+            st.button("Regenerate after picture", on_click=queue, args=({"type": "render"},),
+                      key=f"rerender_{S.rev}")
+    with pins_tab:
+        st.image(draw_pins(S.image, items, S.highlight),
+                 caption="Numbered pins show where each piece would go. Green ring = kept.")
     a = S.analysis or {}
     st.markdown(f"**{a.get('room_type', 'Your room')}.** {a.get('summary', '')}")
     if a.get("keep"):

@@ -53,7 +53,8 @@ Analyse the room, then propose 3 genuinely different design concepts for this ex
 
 
 def refine_prompt(analysis: dict, prefs: Preferences, concept: dict, locked_ids: list[str], instruction: str) -> str:
-    clean = {**concept, "items": [{k: v for k, v in i.items() if k != "locked"} for i in concept["items"]]}
+    clean = {k: v for k, v in concept.items() if k != "after_image"}
+    clean["items"] = [{k: v for k, v in i.items() if k != "locked"} for i in concept["items"]]
     locked = (
         f"\nThe owner has LOCKED these items; keep them exactly as they are (same id, name, description, position): {', '.join(locked_ids)}.\n"
         if locked_ids else ""
@@ -81,3 +82,17 @@ Room analysis: {json.dumps(analysis)}
 
 The owner has already seen these concepts: {', '.join(existing_names)}.
 Propose ONE new concept that feels clearly different from all of them."""
+
+
+def after_image_prompt(concept: dict) -> str:
+    """Edit instruction for the image model: restyle the photo as this concept."""
+    palette = ", ".join(c["name"] for c in concept["palette"])
+    items = "; ".join(f'{i["name"]} ({i["description"]}) {i["placement"]}' for i in concept["items"])
+    prompt = (
+        f"Redesign this room as a finished, professionally styled interior in the '{concept['name']}' look: "
+        f"{concept['summary']} Colour palette: {palette}. Materials: {', '.join(concept['materials'])}. "
+        f"Lighting: {concept['lighting']} Furnish it with: {items}. "
+        "Keep the exact same room: camera angle, walls, windows, doors, ceiling and floor area stay where "
+        "they are. Photorealistic interior photograph, natural light, no people, no text."
+    )
+    return prompt[:2000]

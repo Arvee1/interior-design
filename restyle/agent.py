@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import urllib.request
 from functools import lru_cache
 
 from langchain.agents import create_agent
@@ -13,7 +14,8 @@ from langchain.agents.middleware import ModelRetryMiddleware
 from PIL import Image, ImageOps
 from pydantic import ValidationError
 
-from .prompts import SYSTEM_PROMPT, Preferences, generate_prompt, new_concept_prompt, refine_prompt
+from .prompts import (SYSTEM_PROMPT, Preferences, after_image_prompt, generate_prompt, new_concept_prompt,
+                      refine_prompt)
 from .schemas import DesignConcept, DesignResult
 from .tools import BUDGET_BANDS_AUD, FX_TO_AUD, STYLE_GUIDES, check_budget, get_style_guide
 
@@ -21,6 +23,8 @@ from .tools import BUDGET_BANDS_AUD, FX_TO_AUD, STYLE_GUIDES, check_budget, get_
 # value is a LangChain "provider:model" string (e.g. "anthropic:claude-sonnet-5").
 DEFAULT_MODEL = "replicate:anthropic/claude-sonnet-5"
 REPLICATE_MAX_TOKENS = 16000  # three full concepts can exceed Replicate's 8192 default
+# Replicate image-editing model for "after" pictures (needs REPLICATE_API_TOKEN).
+DEFAULT_IMAGE_MODEL = "black-forest-labs/flux-kontext-pro"
 MAX_IMAGE_SIDE = 1568  # larger images are downscaled by the model anyway; this saves tokens
 
 
@@ -59,6 +63,31 @@ def _replicate_context(prefs: Preferences) -> str:
         if band and rate else "Use your judgement on the budget."
     )
     return f"Style guides (use these instead of the get_style_guide tool):\n\n{guides}\n\nBudget: {budget}"
+
+
+def _jpeg_file(image_b64: str) -> io.BytesIO:
+    """File-like JPEG for Replicate uploads; the name tells Replicate the content type."""
+    f = io.BytesIO(base64.b64decode(image_b64))
+    f.name = "room.jpg"
+    return f
+
+
+def render_after(image_b64: str, concept: dict, model: str | None = None) -> bytes:
+    """Restyle the room photo as the given concept and return the "after" image as bytes."""
+    import replicate
+
+    out = replicate.run(model or os.getenv("RESTYLE_IMAGE_MODEL", DEFAULT_IMAGE_MODEL), input={
+        "prompt": after_image_prompt(concept),
+        "input_image": _jpeg_file(image_b64),
+        "aspect_ratio": "match_input_image",
+        "output_format": "jpg",
+    })
+    if isinstance(out, list):
+        out = out[0]
+    if hasattr(out, "read"):
+        return out.read()
+    with urllib.request.urlopen(str(out)) as resp:  # older clients return a URL
+        return resp.read()
 
 
 def _extract_json(text: str) -> str:
@@ -104,7 +133,7 @@ class RoomDesigner:
                 chunks = replicate.run(self.model.split(":", 1)[1], input={
                     "prompt": full_prompt + retry_note,
                     "system_prompt": SYSTEM_PROMPT,
-                    "image": io.BytesIO(base64.b64decode(image_b64)),
+                    "image": _jpeg_file(image_b64),
                     "max_tokens": REPLICATE_MAX_TOKENS,
                 })
                 return schema.model_validate_json(_extract_json("".join(str(c) for c in chunks)))

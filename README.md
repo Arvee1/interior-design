@@ -63,6 +63,8 @@ LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=...
 ```
 
-## Limitations
+## Before and after pictures
 
-The app suggests designs but does not generate "after" images. If you want a render, add an image-generation tool to `restyle/tools.py` and display its output in `app.py`.
+In the **Before & after** tab, click **Generate after picture** to restyle your photo as the selected concept. This uses an image-editing model on Replicate (`black-forest-labs/flux-kontext-pro` by default; change it with `RESTYLE_IMAGE_MODEL`) and needs `REPLICATE_API_TOKEN`. Each picture costs a few cents. Refining or removing items clears the picture so it never shows an outdated design; undo brings it back.
+
+The after picture is an AI impression of the concept, so it won't match every listed piece exactly.
