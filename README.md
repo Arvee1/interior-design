@@ -50,7 +50,14 @@ Push the repo to GitHub, excluding `.env`. Create the app in Streamlit Cloud and
 
 ```toml
 REPLICATE_API_TOKEN = "r8_..."
+ALLOWED_USERS = ["arvee"]          # usernames that can sign in (not case-sensitive)
 ```
+
+## Access and limits
+
+Only usernames listed in `ALLOWED_USERS` can use the app. For local runs, put them in `.env` as `ALLOWED_USERS=arvee,guest`. Each user can upload 5 photos, generate 5 after pictures and make 10 design changes. The sidebar shows how many of each they've used. Change the numbers in `restyle/usage.py`.
+
+Counts are saved in `.usage.json`. On Streamlit Community Cloud that file resets when the app is rebooted or redeployed.
 
 The app reads the key from Streamlit secrets automatically. If no key is found anywhere, it shows a key field in the sidebar.
 

@@ -4,6 +4,7 @@ Run with:  streamlit run app.py
 """
 
 import copy
+import hmac
 import os
 
 import streamlit as st
@@ -15,6 +16,7 @@ from restyle.agent import RoomDesigner, prepare_image, render_after  # noqa: E40
 from restyle.prompts import Preferences  # noqa: E402
 from restyle.render import draw_pins, palette_html, shopping_list_csv  # noqa: E402
 from restyle.tools import STYLE_GUIDES  # noqa: E402
+from restyle import usage  # noqa: E402
 
 st.set_page_config(page_title="Restyle", page_icon="🛋️", layout="wide")
 
@@ -36,6 +38,43 @@ for _name in ("ANTHROPIC_API_KEY", "REPLICATE_API_TOKEN"):
 KEY_ENV, KEY_LABEL = (("REPLICATE_API_TOKEN", "Replicate API token") if RoomDesigner().provider == "replicate"
                       else ("ANTHROPIC_API_KEY", "Anthropic API key"))
 
+# ---------------------------------------------------------------- login
+def _allowed_users() -> list[str]:
+    """ALLOWED_USERS from Streamlit secrets (a name or a list of names), or comma-separated in .env."""
+    raw = _secret("ALLOWED_USERS") or os.getenv("ALLOWED_USERS", "")
+    names = raw.split(",") if isinstance(raw, str) else list(raw)
+    return [n.strip().lower() for n in names if str(n).strip()]
+
+
+def _log_in():
+    typed = S.get("login_name", "").strip().lower()
+    if any(hmac.compare_digest(typed, u) for u in _allowed_users()):
+        S.user = typed
+    else:
+        S.login_error = True
+
+
+def _log_out():
+    S.clear()
+
+
+S = st.session_state
+if not S.get("user"):
+    st.title("Restyle")
+    if not _allowed_users():
+        st.error("No users are set up. Add ALLOWED_USERS to the app's Streamlit secrets.")
+        st.stop()
+    with st.form("login"):
+        st.text_input("Username", key="login_name")
+        st.form_submit_button("Sign in", type="primary", on_click=_log_in)
+    if S.pop("login_error", False):
+        st.error("That username isn't recognised.")
+    st.stop()
+
+
+def quota_left(kind: str) -> int:
+    return usage.remaining(S.user, kind)
+
 # ---------------------------------------------------------------- state
 defaults = {
     "image_b64": None, "image": None, "file_sig": None,
@@ -44,7 +83,6 @@ defaults = {
 }
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
-S = st.session_state
 
 
 def prefs() -> Preferences:
@@ -122,6 +160,7 @@ def undo(idx: int):
 def start_over():
     for k, v in defaults.items():
         S[k] = copy.deepcopy(v)
+    S.upload_n = S.get("upload_n", 0) + 1  # fresh uploader, so the old photo isn't counted again
 
 
 # ---------------------------------------------------------------- sidebar
@@ -145,6 +184,13 @@ with st.sidebar:
             st.rerun()
     if S.concepts:
         st.button("Start with a new photo", on_click=start_over, use_container_width=True)
+    st.divider()
+    st.subheader("Your usage")
+    used = usage.get(S.user)
+    for kind, limit in usage.LIMITS.items():
+        st.progress(min(used[kind], limit) / limit, text=f"{usage.LABELS[kind]}: {used[kind]} of {limit}")
+    st.caption(f"Signed in as **{S.user}**")
+    st.button("Sign out", on_click=_log_out, use_container_width=True)
 
 st.title("Restyle")
 st.caption("Design ideas from a photo of your room")
@@ -168,6 +214,8 @@ if S.pending:
             S.history = [[] for _ in S.concepts]
             S.active = 0
         elif action["type"] == "refine":
+            if not quota_left("refines"):
+                raise RuntimeError(f"you've used all {usage.LIMITS['refines']} design changes.")
             current = S.concepts[idx]
             locked = [i for i in current["items"] if i.get("locked")]
             with st.spinner(f"Reworking the concept: {action['instruction'][:80]}"):
@@ -175,6 +223,7 @@ if S.pending:
                                       [i["id"] for i in locked], action["instruction"])
             S.history[idx].append(copy.deepcopy(current))
             S.concepts[idx] = clean_concept(out, locked)
+            usage.record(S.user, "refines")
         elif action["type"] == "new":
             with st.spinner("Sketching a new direction..."):
                 out = designer.new_concept(S.image_b64, prefs(), S.analysis, [c["name"] for c in S.concepts])
@@ -182,10 +231,13 @@ if S.pending:
             S.history.append([])
             S.active = len(S.concepts) - 1
         elif action["type"] == "render":
+            if not quota_left("renders"):
+                raise RuntimeError(f"you've used all {usage.LIMITS['renders']} after pictures.")
             if not os.getenv("REPLICATE_API_TOKEN"):
                 raise RuntimeError("the after picture needs REPLICATE_API_TOKEN in .env or Streamlit secrets.")
             with st.spinner(f"Picturing your room as {S.concepts[idx]['name']}. This takes about 10-20 seconds..."):
                 S.concepts[idx]["after_image"] = render_after(S.image_b64, S.concepts[idx])
+            usage.record(S.user, "renders")
         S.rev += 1
         S.highlight = None
     except Exception as e:  # surface API / validation errors in the UI
@@ -196,16 +248,25 @@ if S.pending:
 if not S.concepts:
     left, right = st.columns([1.3, 1], gap="large")
     with left:
+        out_of_uploads = not quota_left("uploads") and S.image is None
+        if out_of_uploads:
+            st.warning(f"You've used all {usage.LIMITS['uploads']} photo uploads.")
         upload = st.file_uploader("Upload a photo of your room", type=["jpg", "jpeg", "png", "webp"],
-                                  help="A wide shot from a corner, in daylight, gives the best ideas.")
+                                  help="A wide shot from a corner, in daylight, gives the best ideas.",
+                                  disabled=out_of_uploads, key=f"upload_{S.get('upload_n', 0)}")
         if upload:
             sig = (upload.name, upload.size)
             if sig != S.file_sig:
-                try:
-                    S.image_b64, S.image = prepare_image(upload.getvalue())
-                    S.file_sig = sig
-                except Exception:
-                    st.error("That photo couldn't be opened. Try a JPEG or PNG.")
+                if not quota_left("uploads"):
+                    st.error(f"You've used all {usage.LIMITS['uploads']} photo uploads.")
+                else:
+                    try:
+                        S.image_b64, S.image = prepare_image(upload.getvalue())
+                        S.file_sig = sig
+                        usage.record(S.user, "uploads")
+                        st.rerun()  # refresh the sidebar count
+                    except Exception:
+                        st.error("That photo couldn't be opened. Try a JPEG or PNG.")
             if S.image is not None:
                 st.image(S.image)
     with right:
@@ -253,11 +314,14 @@ with photo_col:
             else:
                 st.info("See this concept in your room.")
                 st.button("Generate after picture", type="primary", on_click=queue,
-                          args=({"type": "render"},), use_container_width=True, key=f"render_{S.rev}")
+                          args=({"type": "render"},), use_container_width=True, key=f"render_{S.rev}",
+                          disabled=not quota_left("renders"))
+                if not quota_left("renders"):
+                    st.caption(f"You've used all {usage.LIMITS['renders']} after pictures.")
         if c.get("after_image"):
             st.caption("AI impression of the concept, not an exact render of every listed piece.")
-            st.button("Regenerate after picture", on_click=queue, args=({"type": "render"},),
-                      key=f"rerender_{S.rev}")
+            st.button(f"Regenerate after picture ({quota_left('renders')} left)", on_click=queue,
+                      args=({"type": "render"},), key=f"rerender_{S.rev}", disabled=not quota_left("renders"))
     with pins_tab:
         st.image(draw_pins(S.image, items, S.highlight),
                  caption="Numbered pins show where each piece would go. Green ring = kept.")
@@ -281,10 +345,16 @@ with detail_col:
     # ---- refine panel
     with st.container(border=True):
         st.subheader("Refine this look")
-        st.caption("Tick Keep on pieces you love so they stay put, then ask for changes.")
+        no_refines = not quota_left("refines")
+        if no_refines:
+            st.warning(f"You've used all {usage.LIMITS['refines']} design changes. "
+                       "You can still keep, remove and undo pieces.")
+        else:
+            st.caption(f"Tick Keep on pieces you love so they stay put, then ask for changes. "
+                       f"{quota_left('refines')} design changes left.")
         chip_cols = st.columns(4)
         for n, q in enumerate(QUICK_CHANGES):
-            chip_cols[n % 4].button(q, key=f"quick_{n}_{S.rev}", on_click=queue,
+            chip_cols[n % 4].button(q, key=f"quick_{n}_{S.rev}", on_click=queue, disabled=no_refines,
                                     args=({"type": "refine", "instruction": q},), use_container_width=True)
         s1, s2, s3 = st.columns(3)
         s1.select_slider("Tone (cooler / warmer)", SLIDER_STEPS, value="As is", key=f"slider_tone_{S.rev}")
@@ -295,7 +365,8 @@ with detail_col:
         b1, b2 = st.columns([1, 1])
         b1.button(f"Undo last change ({len(S.history[idx])})", on_click=undo, args=(idx,),
                   disabled=not S.history[idx], use_container_width=True)
-        b2.button("Apply changes", type="primary", on_click=queue_apply, use_container_width=True)
+        b2.button("Apply changes", type="primary", on_click=queue_apply, use_container_width=True,
+                  disabled=no_refines)
 
     # ---- items
     low = sum(i["price_low"] for i in items)
