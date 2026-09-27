@@ -16,7 +16,7 @@ from restyle.agent import RoomDesigner, prepare_image, render_after  # noqa: E40
 from restyle.prompts import Preferences  # noqa: E402
 from restyle.render import draw_pins, palette_html, shopping_list_csv  # noqa: E402
 from restyle.tools import STYLE_GUIDES  # noqa: E402
-from restyle import usage  # noqa: E402
+from restyle import catalog, usage  # noqa: E402
 
 st.set_page_config(page_title="Restyle", page_icon="🛋️", layout="wide")
 
@@ -31,7 +31,7 @@ def _secret(name: str):
     except Exception:
         return None
 
-for _name in ("ANTHROPIC_API_KEY", "REPLICATE_API_TOKEN"):
+for _name in ("ANTHROPIC_API_KEY", "REPLICATE_API_TOKEN", "SERPER_API_KEY"):
     if not os.getenv(_name) and _secret(_name):
         os.environ[_name] = _secret(_name)
 
@@ -86,8 +86,18 @@ for k, v in defaults.items():
 
 
 def prefs() -> Preferences:
+    store = catalog.STORE if catalog.enabled() and S.get("pref_store", True) else ""
     return Preferences(styles=S.get("pref_styles", []), budget=S.get("pref_budget", "mid"),
-                       currency=S.get("pref_currency", "AUD"), notes=S.get("pref_notes", ""))
+                       currency=S.get("pref_currency", "AUD"), notes=S.get("pref_notes", ""), store=store)
+
+
+def with_products(concept: dict) -> dict:
+    """Attach real Harvey Norman products (and prices) when that option is on."""
+    p = prefs()
+    if not p.store:
+        return concept
+    with st.spinner(f"Finding matching pieces at {p.store}..."):
+        return catalog.match_concept(concept, p.currency)
 
 
 def money(v: float) -> str:
@@ -173,6 +183,9 @@ with st.sidebar:
     st.selectbox("Currency", ["AUD", "USD", "GBP", "EUR", "NZD", "CAD"], key="pref_currency")
     st.text_area("Anything to know?", key="pref_notes", height=110,
                  placeholder="e.g. Keeping the grey sofa. Two kids and a dog. Renting, so no painting.")
+    if catalog.enabled():
+        st.toggle(f"Use {catalog.STORE} products", value=True, key="pref_store",
+                  help=f"Match each piece to a real {catalog.STORE} product with its price and a link.")
     st.divider()
     if os.getenv(KEY_ENV):
         st.caption(f"Model: `{RoomDesigner().model}`")
@@ -210,7 +223,7 @@ if S.pending:
             with st.spinner("Studying your room and sketching three concepts. This usually takes under a minute..."):
                 result = designer.generate(S.image_b64, prefs())
             S.analysis = result.analysis.model_dump()
-            S.concepts = [clean_concept(c) for c in result.concepts]
+            S.concepts = [with_products(clean_concept(c)) for c in result.concepts]
             S.history = [[] for _ in S.concepts]
             S.active = 0
         elif action["type"] == "refine":
@@ -222,12 +235,12 @@ if S.pending:
                 out = designer.refine(S.image_b64, prefs(), S.analysis, current,
                                       [i["id"] for i in locked], action["instruction"])
             S.history[idx].append(copy.deepcopy(current))
-            S.concepts[idx] = clean_concept(out, locked)
+            S.concepts[idx] = with_products(clean_concept(out, locked))
             usage.record(S.user, "refines")
         elif action["type"] == "new":
             with st.spinner("Sketching a new direction..."):
                 out = designer.new_concept(S.image_b64, prefs(), S.analysis, [c["name"] for c in S.concepts])
-            S.concepts.append(clean_concept(out))
+            S.concepts.append(with_products(clean_concept(out)))
             S.history.append([])
             S.active = len(S.concepts) - 1
         elif action["type"] == "render":
@@ -384,12 +397,22 @@ with detail_col:
                 st.markdown(f"{pin} **{item['name']}** · {item['category']}{optional}")
                 st.write(item["description"])
                 st.caption(item["placement"])
+                if item.get("product_url"):
+                    img_col, txt_col = st.columns([1, 3])
+                    if item.get("product_image"):
+                        img_col.image(item["product_image"], use_container_width=True)
+                    txt_col.markdown(f"[{item['product_title']}]({item['product_url']})  \n"
+                                     f"_at {catalog.STORE}_")
             with right:
-                st.markdown(f"**{money(item['price_low'])} to {money(item['price_high'])}**")
+                if item.get("product_price_aud"):
+                    st.markdown(f"**{money(item['price_low'])}**")
+                else:
+                    st.markdown(f"**{money(item['price_low'])} to {money(item['price_high'])}**")
                 st.checkbox("Keep", value=bool(item.get("locked")), key=f"keep_{idx}_{item['id']}_{S.rev}",
                             on_change=toggle_keep, args=(idx, item["id"]))
                 r1, r2 = st.columns(2)
                 r1.button("Swap", key=f"swap_{item['id']}_{S.rev}", help="Suggest a different piece for this spot",
+                          disabled=no_refines,
                           on_click=queue, args=({"type": "refine", "instruction":
                               f'Replace "{item["name"]}" (id {item["id"]}) with a different piece that fills '
                               f"the same role, in keeping with the concept."},))

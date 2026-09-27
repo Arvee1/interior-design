@@ -64,8 +64,9 @@ def shopping_list_csv(concept: dict, currency: str) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["#", "Item", "Category", "Description", "Placement", "Priority",
-                     f"Price low ({currency})", f"Price high ({currency})", "Kept"])
+                     f"Price low ({currency})", f"Price high ({currency})", "Kept", "Product", "Link"])
     for n, i in enumerate(concept["items"], start=1):
         writer.writerow([n, i["name"], i["category"], i["description"], i["placement"], i["priority"],
-                         round(i["price_low"]), round(i["price_high"]), "yes" if i.get("locked") else ""])
+                         round(i["price_low"]), round(i["price_high"]), "yes" if i.get("locked") else "",
+                         i.get("product_title", ""), i.get("product_url", "")])
     return buf.getvalue().encode("utf-8")

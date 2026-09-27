@@ -51,7 +51,12 @@ Push the repo to GitHub, excluding `.env`. Create the app in Streamlit Cloud and
 ```toml
 REPLICATE_API_TOKEN = "r8_..."
 ALLOWED_USERS = ["arvee"]          # usernames that can sign in (not case-sensitive)
+SERPER_API_KEY = "..."             # optional: match pieces to Harvey Norman products
 ```
+
+## Harvey Norman products
+
+With `SERPER_API_KEY` set (free key from serper.dev), the design agent picks pieces Harvey Norman is likely to stock. The app then searches Google Shopping in Australia for each one and attaches the closest Harvey Norman listing: product name, photo, price and link. The real price replaces the estimate, and the CSV export includes the product and link. Turn it off with the sidebar toggle. Harvey Norman's own site blocks automated access, so the app never contacts it directly. A generate uses about 20 searches; repeat searches are cached.
 
 ## Access and limits
 

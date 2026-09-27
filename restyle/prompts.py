@@ -30,6 +30,7 @@ class Preferences:
     budget: str = "mid"          # low | mid | high
     currency: str = "AUD"
     notes: str = ""
+    store: str = ""              # e.g. "Harvey Norman": pick pieces this retailer stocks
 
     def as_text(self) -> str:
         lines = [
@@ -38,6 +39,12 @@ class Preferences:
         ]
         if self.styles:
             lines.append(f"Styles the owner likes: {', '.join(self.styles)}.")
+        if self.store:
+            lines.append(
+                f"Choose pieces that {self.store} (Australia) is likely to stock, priced like their range. "
+                "Give each item a plain, searchable product name as a shopper would type it, e.g. "
+                "'3 seater fabric sofa' or 'round marble coffee table', so it can be found in their catalogue."
+            )
         if self.notes.strip():
             lines.append(f"Owner's notes: {self.notes.strip()[:1500]}")
         return "\n".join(lines)
