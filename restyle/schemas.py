@@ -11,7 +11,7 @@ _HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 class PaletteColor(BaseModel):
     name: str = Field(description="Evocative colour name, e.g. 'Olive grove'")
     hex: str = Field(description="Hex code in the form #RRGGBB")
-    role: str = Field(description="One of: walls, main, accent, wood, metal, textile")
+    role: str = Field(description="One of: main, accent, wood, metal, textile (furniture and decor only)")
 
     @field_validator("hex", mode="before")
     @classmethod
@@ -26,10 +26,10 @@ class FurnitureItem(BaseModel):
     id: str = Field(description="Short unique slug, e.g. 'boucle-armchair'")
     name: str = Field(description="Name of the piece, e.g. 'Boucle armchair'")
     category: str = Field(
-        description="seating, tables, storage, lighting, textiles, decor, plants, art, wall or other"
+        description="seating, tables, storage, lighting, appliances, textiles, decor, plants, art or other"
     )
     description: str = Field(description="One sentence: material, colour, shape of the specific piece")
-    placement: str = Field(description="Where in the room it goes")
+    placement: str = Field(description="Where in the room it goes, clear of windows and doors")
     x: Optional[float] = Field(
         default=None,
         description="Horizontal position in THE PHOTO where the item would sit, 0-100 (percent from left). Null if off-frame.",
@@ -59,9 +59,9 @@ class DesignConcept(BaseModel):
     tagline: str = Field(description="One evocative line")
     summary: str = Field(description="2-3 sentences describing the look and feel")
     palette: list[PaletteColor] = Field(description="Exactly 5 colours")
-    materials: list[str] = Field(description="3-6 key materials and finishes")
+    materials: list[str] = Field(description="3-6 key materials and finishes for the furniture and decor")
     items: list[FurnitureItem] = Field(description="6-9 furniture and decor pieces")
-    lighting: str = Field(description="One or two sentences on the lighting plan")
+    lighting: str = Field(description="One or two sentences on the lighting plan, using lamps and existing light points")
     tips: list[str] = Field(description="3-4 practical layout or styling tips specific to this room")
 
 

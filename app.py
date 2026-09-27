@@ -86,7 +86,7 @@ for k, v in defaults.items():
 
 
 def prefs() -> Preferences:
-    store = catalog.STORE if catalog.enabled() and S.get("pref_store", True) else ""
+    store = catalog.STORE if catalog.enabled() and S.get("pref_store", False) else ""
     return Preferences(styles=S.get("pref_styles", []), budget=S.get("pref_budget", "mid"),
                        currency=S.get("pref_currency", "AUD"), notes=S.get("pref_notes", ""), store=store)
 
@@ -183,9 +183,13 @@ with st.sidebar:
     st.selectbox("Currency", ["AUD", "USD", "GBP", "EUR", "NZD", "CAD"], key="pref_currency")
     st.text_area("Anything to know?", key="pref_notes", height=110,
                  placeholder="e.g. Keeping the grey sofa. Two kids and a dog. Renting, so no painting.")
-    if catalog.enabled():
-        st.toggle(f"Use {catalog.STORE} products", value=True, key="pref_store",
-                  help=f"Match each piece to a real {catalog.STORE} product with its price and a link.")
+    st.toggle(f"Search {catalog.STORE} products (serper.dev)", value=False, key="pref_store",
+              disabled=not catalog.enabled(),
+              help=f"On: each piece is matched to a real {catalog.STORE} product with its price and a link, "
+                   "using serper.dev searches. Off: no searches are made and prices are estimates."
+                   + ("" if catalog.enabled() else " Add SERPER_API_KEY to Streamlit secrets to enable this."))
+    if not catalog.enabled():
+        st.caption("Product search is off: no SERPER_API_KEY set.")
     st.divider()
     if os.getenv(KEY_ENV):
         st.caption(f"Model: `{RoomDesigner().model}`")

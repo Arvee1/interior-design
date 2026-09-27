@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 
 SYSTEM_PROMPT = """You are a senior interior designer who redesigns real rooms from photos.
 
+What you may change: ONLY movable furniture, appliances, lamps, rugs, soft furnishings, plants,
+art and decor. Everything built into the room stays exactly as it is: windows, doors, walls
+(including their colour and finish), floors, ceilings, built-in joinery and fixed light points.
+Never remove, move, cover up, resize or replace a window or door, and never place a piece where it
+would block one. Palettes, materials and tips apply to the furniture and decor only; do not suggest
+painting, wallpaper, new flooring, renovations or building work.
+
 How you work:
 - Study the photo closely: room type, approximate size and proportions, windows and natural light,
   flooring, fixed architectural features, and existing pieces worth keeping.
@@ -76,7 +83,9 @@ Current concept:
 {locked}
 Requested change: {instruction}
 
-Revise the concept to deliver the change while keeping it coherent and fitting this room. Keep items
+Revise the concept to deliver the change while keeping it coherent and fitting this room. Even if the
+request asks for it, only change furniture, appliances and decor: keep windows, doors, walls, floors
+and ceilings as they are, and say so in the tips if the owner asked for building work. Keep items
 that still work (with their ids); replace or add others as needed; keep 6-9 items. Rename the concept
 if its character changes. Update x/y so every item is pinned where it would sit in the photo."""
 
@@ -92,14 +101,21 @@ Propose ONE new concept that feels clearly different from all of them."""
 
 
 def after_image_prompt(concept: dict) -> str:
-    """Edit instruction for the image model: restyle the photo as this concept."""
+    """Edit instruction for the image model: restyle the photo as this concept.
+
+    The keep-the-room rule goes first so trimming a long furniture list can never cut it off."""
+    rule = (
+        "Change ONLY the movable furniture, appliances, lamps, rugs, soft furnishings, plants, art and decor. "
+        "Keep every window and door exactly as it is: same position, size, shape, frame and glazing, fully "
+        "visible and not blocked or covered. Also keep the walls and their colour, the floor, the ceiling, "
+        "built-in fixtures and the camera angle unchanged. "
+    )
     palette = ", ".join(c["name"] for c in concept["palette"])
     items = "; ".join(f'{i["name"]} ({i["description"]}) {i["placement"]}' for i in concept["items"])
-    prompt = (
-        f"Redesign this room as a finished, professionally styled interior in the '{concept['name']}' look: "
-        f"{concept['summary']} Colour palette: {palette}. Materials: {', '.join(concept['materials'])}. "
-        f"Lighting: {concept['lighting']} Furnish it with: {items}. "
-        "Keep the exact same room: camera angle, walls, windows, doors, ceiling and floor area stay where "
-        "they are. Photorealistic interior photograph, natural light, no people, no text."
+    design = (
+        f"Restyle the furniture and decor in the '{concept['name']}' look: {concept['summary']} "
+        f"Furniture and decor colours: {palette}. Materials: {', '.join(concept['materials'])}. "
+        f"Furnish it with: {items}. "
     )
-    return prompt[:2000]
+    ending = "Photorealistic interior photograph, natural light, no people, no text."
+    return rule + design[:2000 - len(rule) - len(ending)] + ending
