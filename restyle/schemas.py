@@ -70,6 +70,12 @@ class RoomAnalysis(BaseModel):
     summary: str = Field(description="1-2 sentences describing the room as it is now")
     keep: list[str] = Field(description="Existing features worth keeping")
     constraints: list[str] = Field(description="Things the design must work around")
+    fixed_features: list[str] = Field(
+        default_factory=list,
+        description="EVERY window, door, shutter, blind, window frame, built-in and other fixed feature visible "
+                    "in the photo, one per entry, each with its location and look so it can be recognised, "
+                    "e.g. 'tall window with white plantation shutters on the left wall'",
+    )
 
 
 class DesignResult(BaseModel):

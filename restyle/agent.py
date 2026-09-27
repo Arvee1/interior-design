@@ -72,12 +72,14 @@ def _jpeg_file(image_b64: str) -> io.BytesIO:
     return f
 
 
-def render_after(image_b64: str, concept: dict, model: str | None = None) -> bytes:
-    """Restyle the room photo as the given concept and return the "after" image as bytes."""
+def render_after(image_b64: str, concept: dict, fixed_features: list[str] | None = None,
+                 model: str | None = None) -> bytes:
+    """Restyle the room photo as the given concept and return the "after" image as bytes.
+    fixed_features (windows, doors, shutters...) are named in the prompt so they survive the edit."""
     import replicate
 
     out = replicate.run(model or os.getenv("RESTYLE_IMAGE_MODEL", DEFAULT_IMAGE_MODEL), input={
-        "prompt": after_image_prompt(concept),
+        "prompt": after_image_prompt(concept, fixed_features),
         "input_image": _jpeg_file(image_b64),
         "aspect_ratio": "match_input_image",
         "output_format": "jpg",

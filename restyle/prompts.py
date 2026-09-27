@@ -1,15 +1,17 @@
 """System prompt and per-task prompt builders."""
 
 import json
+import re
 from dataclasses import dataclass, field
 
 SYSTEM_PROMPT = """You are a senior interior designer who redesigns real rooms from photos.
 
 What you may change: ONLY movable furniture, appliances, lamps, rugs, soft furnishings, plants,
-art and decor. Everything built into the room stays exactly as it is: windows, doors, walls
-(including their colour and finish), floors, ceilings, built-in joinery and fixed light points.
-Never remove, move, cover up, resize or replace a window or door, and never place a piece where it
-would block one. Palettes, materials and tips apply to the furniture and decor only; do not suggest
+art and decor. Everything built into the room stays exactly as it is: windows, doors, window
+coverings already there (shutters, blinds, existing curtains), walls (including their colour and
+finish), floors, ceilings, built-in joinery and fixed light points. Never remove, move, cover up,
+resize or replace a window, door or shutter, never add curtains or blinds over them, and never place
+a piece where it would block one. Palettes, materials and tips apply to the furniture and decor only; do not suggest
 painting, wallpaper, new flooring, renovations or building work.
 
 How you work:
@@ -100,22 +102,28 @@ The owner has already seen these concepts: {', '.join(existing_names)}.
 Propose ONE new concept that feels clearly different from all of them."""
 
 
-def after_image_prompt(concept: dict) -> str:
+IMAGE_PROMPT_CHARS = 1400  # the image model reads ~512 tokens; shorter keeps the keep-list prominent
+
+
+def after_image_prompt(concept: dict, fixed_features: list[str] | None = None) -> str:
     """Edit instruction for the image model: restyle the photo as this concept.
 
-    The keep-the-room rule goes first so trimming a long furniture list can never cut it off."""
+    The keep-the-room rules go first and name each fixed feature seen in the photo, so they are never
+    trimmed and the model knows exactly what must survive the edit."""
+    names = [re.sub(r"^(a|an|the)\s+", "", f.strip().rstrip("."), flags=re.I) for f in (fixed_features or [])[:8]]
+    named = "".join(f" Keep the {n} exactly as it is." for n in names if n)
     rule = (
-        "Change ONLY the movable furniture, appliances, lamps, rugs, soft furnishings, plants, art and decor. "
-        "Keep every window and door exactly as it is: same position, size, shape, frame and glazing, fully "
-        "visible and not blocked or covered. Also keep the walls and their colour, the floor, the ceiling, "
-        "built-in fixtures and the camera angle unchanged. "
+        "Edit only the movable furniture and decor in this photo. Do not remove, replace, move, resize, "
+        "cover or restyle any window, door, shutter, blind, window frame or doorway: every one stays in the "
+        f"same place, same size, same colour and fully visible, with nothing placed in front of it.{named} "
+        "Keep the walls, wall colour, floor, ceiling, built-ins and camera angle identical. "
+        "Do not add curtains or blinds. "
     )
     palette = ", ".join(c["name"] for c in concept["palette"])
-    items = "; ".join(f'{i["name"]} ({i["description"]}) {i["placement"]}' for i in concept["items"])
+    items = ", ".join(i["name"] for i in concept["items"])
     design = (
-        f"Restyle the furniture and decor in the '{concept['name']}' look: {concept['summary']} "
-        f"Furniture and decor colours: {palette}. Materials: {', '.join(concept['materials'])}. "
-        f"Furnish it with: {items}. "
+        f"Replace the furniture with a '{concept['name']}' look in {palette} tones "
+        f"({', '.join(concept['materials'][:4])}): {items}. "
     )
-    ending = "Photorealistic interior photograph, natural light, no people, no text."
-    return rule + design[:2000 - len(rule) - len(ending)] + ending
+    ending = "Photorealistic, natural light, no people, no text."
+    return rule + design[:max(0, IMAGE_PROMPT_CHARS - len(rule) - len(ending))] + ending

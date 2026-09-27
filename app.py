@@ -253,7 +253,8 @@ if S.pending:
             if not os.getenv("REPLICATE_API_TOKEN"):
                 raise RuntimeError("the after picture needs REPLICATE_API_TOKEN in .env or Streamlit secrets.")
             with st.spinner(f"Picturing your room as {S.concepts[idx]['name']}. This takes about 10-20 seconds..."):
-                S.concepts[idx]["after_image"] = render_after(S.image_b64, S.concepts[idx])
+                S.concepts[idx]["after_image"] = render_after(S.image_b64, S.concepts[idx],
+                                                               (S.analysis or {}).get("fixed_features"))
             usage.record(S.user, "renders")
         S.rev += 1
         S.highlight = None
@@ -348,6 +349,8 @@ with photo_col:
         st.caption("Worth keeping: " + ", ".join(a["keep"]))
     if a.get("constraints"):
         st.caption("Working around: " + ", ".join(a["constraints"]))
+    if a.get("fixed_features"):
+        st.caption("Fixed, won't change: " + "; ".join(a["fixed_features"]))
 
 with detail_col:
     st.header(c["name"])
