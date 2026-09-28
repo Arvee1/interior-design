@@ -20,6 +20,11 @@ from restyle import catalog, usage  # noqa: E402
 
 st.set_page_config(page_title="Restyle", page_icon="🛋️", layout="wide")
 
+st.markdown("# Wazzup!!! 👋")
+st.warning("**This is a prototype test site.** It's for trying out ideas only: designs, prices, product "
+           "matches and pictures are AI-generated and may be wrong, so don't rely on them for purchases. "
+           "Features, limits and saved usage can change or be reset at any time.", icon="🧪")
+
 QUICK_CHANGES = ["Warmer and cosier", "Brighter and airier", "Cut the cost", "More plants",
                  "Bolder colour", "Less clutter", "More storage", "Kid and pet friendly"]
 SLIDER_STEPS = ["Much less", "Less", "As is", "More", "Much more"]
@@ -85,8 +90,15 @@ for k, v in defaults.items():
     st.session_state.setdefault(k, v)
 
 
+SEARCH_USER = "arvee"  # the only user allowed to switch on serper.dev product search
+
+
+def can_search() -> bool:
+    return catalog.enabled() and S.get("user") == SEARCH_USER
+
+
 def prefs() -> Preferences:
-    store = catalog.STORE if catalog.enabled() and S.get("pref_store", False) else ""
+    store = catalog.STORE if can_search() and S.get("pref_store", False) else ""
     return Preferences(styles=S.get("pref_styles", []), budget=S.get("pref_budget", "mid"),
                        currency=S.get("pref_currency", "AUD"), notes=S.get("pref_notes", ""), store=store)
 
@@ -184,11 +196,12 @@ with st.sidebar:
     st.text_area("Anything to know?", key="pref_notes", height=110,
                  placeholder="e.g. Keeping the grey sofa. Two kids and a dog. Renting, so no painting.")
     st.toggle(f"Search {catalog.STORE} products (serper.dev)", value=False, key="pref_store",
-              disabled=not catalog.enabled(),
+              disabled=not can_search(),
               help=f"On: each piece is matched to a real {catalog.STORE} product with its price and a link, "
-                   "using serper.dev searches. Off: no searches are made and prices are estimates."
-                   + ("" if catalog.enabled() else " Add SERPER_API_KEY to Streamlit secrets to enable this."))
-    if not catalog.enabled():
+                   "using serper.dev searches. Off: no searches are made and prices are estimates.")
+    if S.user != SEARCH_USER:
+        st.caption("Product search is off for this account.")
+    elif not catalog.enabled():
         st.caption("Product search is off: no SERPER_API_KEY set.")
     st.divider()
     if os.getenv(KEY_ENV):
