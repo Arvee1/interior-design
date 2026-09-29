@@ -204,9 +204,7 @@ with st.sidebar:
     elif not catalog.enabled():
         st.caption("Product search is off: no SERPER_API_KEY set.")
     st.divider()
-    if os.getenv(KEY_ENV):
-        st.caption(f"Model: `{RoomDesigner().model}`")
-    else:
+    if not os.getenv(KEY_ENV):
         key = st.text_input(KEY_LABEL, type="password",
                             help=f"Or set {KEY_ENV} in .env / Streamlit secrets.")
         if key:
