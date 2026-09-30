@@ -4,3 +4,4 @@
 __pycache__/
 .venv/
 .usage.json
+.historythemes_usage.json

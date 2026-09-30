@@ -68,18 +68,16 @@ def _replicate_context(prefs: Preferences) -> str:
 def _jpeg_file(image_b64: str) -> io.BytesIO:
     """File-like JPEG for Replicate uploads; the name tells Replicate the content type."""
     f = io.BytesIO(base64.b64decode(image_b64))
-    f.name = "room.jpg"
+    f.name = "photo.jpg"
     return f
 
 
-def render_after(image_b64: str, concept: dict, fixed_features: list[str] | None = None,
-                 model: str | None = None) -> bytes:
-    """Restyle the room photo as the given concept and return the "after" image as bytes.
-    fixed_features (windows, doors, shutters...) are named in the prompt so they survive the edit."""
+def edit_image(image_b64: str, prompt: str, model: str | None = None) -> bytes:
+    """Edit a photo with a Replicate image-editing model (FLUX Kontext by default); returns JPEG bytes."""
     import replicate
 
     out = replicate.run(model or os.getenv("RESTYLE_IMAGE_MODEL", DEFAULT_IMAGE_MODEL), input={
-        "prompt": after_image_prompt(concept, fixed_features),
+        "prompt": prompt,
         "input_image": _jpeg_file(image_b64),
         "aspect_ratio": "match_input_image",
         "output_format": "jpg",
@@ -90,6 +88,13 @@ def render_after(image_b64: str, concept: dict, fixed_features: list[str] | None
         return out.read()
     with urllib.request.urlopen(str(out)) as resp:  # older clients return a URL
         return resp.read()
+
+
+def render_after(image_b64: str, concept: dict, fixed_features: list[str] | None = None,
+                 model: str | None = None) -> bytes:
+    """Restyle the room photo as the given concept and return the "after" image as bytes.
+    fixed_features (windows, doors, shutters...) are named in the prompt so they survive the edit."""
+    return edit_image(image_b64, after_image_prompt(concept, fixed_features), model)
 
 
 def _extract_json(text: str) -> str:

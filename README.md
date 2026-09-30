@@ -80,3 +80,14 @@ LANGSMITH_API_KEY=...
 In the **Before & after** tab, click **Generate after picture** to restyle your photo as the selected concept. This uses an image-editing model on Replicate (`black-forest-labs/flux-kontext-pro` by default; change it with `RESTYLE_IMAGE_MODEL`) and needs `REPLICATE_API_TOKEN`. Each picture costs a few cents. Refining or removing items clears the picture so it never shows an outdated design; undo brings it back.
 
 The after picture is an AI impression of the concept, so it won't match every listed piece exactly.
+
+# History Themes (second app)
+
+`historythemes.py` is a separate Streamlit app in the same repo. Upload a photo of one or more people, pick a theme, and it redraws everyone's outfits for that era using the same Replicate image model (FLUX Kontext Pro) as Restyle's after pictures.
+
+- **Themes:** Decades (1920s to Y2K), Ancient world (Roman, Greek, Egyptian, Stone Age), Historical eras (Viking to Wild West) and Just for fun (Pirates, Steampunk, Space Age, Year 2200, Fairytale Royalty), or type your own. Edit `THEMES` at the top of the file to add more.
+- **Options:** also change hairstyles and accessories (on by default), and swap the background for a matching scene (off by default).
+- **Access and limits:** same `ALLOWED_USERS` sign-in as Restyle. Each user can upload 5 photos and create 10 themed pictures, tracked in `.historythemes_usage.json` and shown in the sidebar.
+- **Run locally:** `streamlit run historythemes.py`
+- **Deploy:** in Streamlit Community Cloud, create a second app from this repo with main file `historythemes.py`, and add `REPLICATE_API_TOKEN` and `ALLOWED_USERS` to its Secrets.
+- Optional: set `HISTORYTHEMES_IMAGE_MODEL` (for example `black-forest-labs/flux-kontext-max`) for a stronger image model.
