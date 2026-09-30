@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from restyle.agent import edit_image, prepare_image  # noqa: E402
+from restyle.faces import keep_faces  # noqa: E402
 from restyle.usage import Tracker  # noqa: E402
 
 st.set_page_config(page_title="History Themes", page_icon="🎭", layout="wide")
@@ -110,17 +111,24 @@ ALL_THEMES = {name: t for group in THEMES.values() for name, t in group.items()}
 
 
 def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, change_background: bool) -> str:
-    """Edit instruction for the image model. The identity-keeping rules come last so they always apply."""
-    parts = [f"Change the clothing of every person in this photo into {outfit}."]
+    """Edit instruction for the image model: change only the outfits, and say so in several ways,
+    because these models otherwise redraw faces."""
+    parts = [
+        f"Change only the clothes of every person in this photo to {outfit}, while keeping every person's "
+        "face exactly the same: identical facial features, face shape, eyes, nose, mouth, skin tone, age and "
+        "expression, so each person is clearly the same recognisable individual. Do not redraw or beautify "
+        "any face."
+    ]
     if change_hair:
-        parts.append(f"Give them matching hairstyles and accessories: {hair}.")
+        parts.append(f"Also add period hairstyles and accessories ({hair}) without changing their faces.")
+    else:
+        parts.append("Keep everyone's hair as it is.")
     parts.append(f"Replace the background with {background}." if change_background
                  else "Keep the background exactly as it is.")
     parts.append(
-        "Each outfit is complete, well-fitted, modest and age-appropriate, like a high-quality costume photo shoot. "
-        "Keep each person's face, identity, skin tone, facial expression, pose, body shape and position exactly "
-        "the same, keep the same number of people, and keep the same camera angle and lighting. "
-        "Photorealistic, no text."
+        "Keep the same number of people in the same poses, positions and body shapes, with the same camera "
+        "angle, framing and lighting. Outfits are complete, well-fitted, modest and age-appropriate, like a "
+        "high-quality costume photo shoot. Photorealistic, no text."
     )
     return " ".join(parts)
 
@@ -195,7 +203,11 @@ def new_photo():
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
     st.header("Options")
-    st.toggle("Change hairstyles and accessories too", value=True, key="opt_hair")
+    st.toggle("Keep everyone's real faces", value=True, key="opt_faces",
+              help="After the picture is made, each person's original face is blended back in, "
+                   "so everyone still looks like themselves.")
+    st.toggle("Change hairstyles and accessories too", value=False, key="opt_hair",
+              help="More fun, but the bigger the change, the more faces can drift.")
     st.toggle("Change the background to match", value=False, key="opt_background")
     st.divider()
     if not os.getenv("REPLICATE_API_TOKEN"):
@@ -233,7 +245,13 @@ if S.pending:
         with st.spinner(f"Dressing everyone for {job['theme']}. This takes about 10-20 seconds..."):
             img = edit_image(S.image_b64, job["prompt"], os.getenv("HISTORYTHEMES_IMAGE_MODEL"))
         usage.record(S.user, "images")
-        S.results.insert(0, {**job, "image": img})
+        faces = None
+        if S.get("opt_faces", True):
+            try:
+                img, faces = keep_faces(S.image, img)
+            except Exception:  # never lose a paid-for picture over the face step
+                faces = None
+        S.results.insert(0, {**job, "image": img, "faces": faces})
     except Exception as e:  # surface API errors in the UI
         S.error = f"That didn't work: {e}"
     st.rerun()
@@ -302,6 +320,10 @@ if S.results:
         before, after = st.columns(2)
         before.image(S.image, caption="Before")
         after.image(r["image"], caption=f"After: {r['theme']}")
+        if r.get("faces"):
+            after.caption(f"Kept {r['faces']} original face{'s' if r['faces'] != 1 else ''}.")
+        elif r.get("faces") == 0:
+            after.caption("Couldn't find faces to keep in this one (side-on or small faces are harder).")
         after.download_button("Download", r["image"], mime="image/jpeg", key=f"dl_{n}_{len(S.results)}",
                               file_name=f"{r['theme'].lower().replace(' ', '-')}-{datetime.now():%Y%m%d-%H%M%S}.jpg")
-    st.caption("AI-generated. Faces and details may not match exactly; try again for a different take.")
+    st.caption("AI-generated. If a face still looks off, try again: each go is a little different.")
