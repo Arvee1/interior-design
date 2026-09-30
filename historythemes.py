@@ -110,22 +110,27 @@ THEMES: dict[str, dict[str, tuple[str, str, str, str]]] = {
 ALL_THEMES = {name: t for group in THEMES.values() for name, t in group.items()}
 
 
+IMAGE_MODEL = "google/nano-banana-2"  # keeps people recognisable; override with HISTORYTHEMES_IMAGE_MODEL
+
+
 def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, change_background: bool) -> str:
-    """Edit instruction for the image model: change only the outfits, and say so in several ways,
-    because these models otherwise redraw faces."""
+    """Edit instruction for the image model: dress everyone head to toe in the theme, swap every
+    item that doesn't fit it, and keep each person's face and identity exactly as they are."""
     parts = [
-        f"Change only the clothes of every person in this photo to {outfit}, while keeping every person's "
-        "face exactly the same: identical facial features, face shape, eyes, nose, mouth, skin tone, age and "
-        "expression, so each person is clearly the same recognisable individual. Do not redraw or beautify "
-        "any face."
+        f"Restyle this photo so every person is dressed head to toe in {outfit}. Replace every item of "
+        "clothing and every accessory that doesn't belong to this theme, including hats, caps, beanies, "
+        "sunglasses, headphones, watches, bags, lanyards, logos, modern shoes and trainers: swap each one for "
+        "a piece that fits the theme, or remove it. Nothing modern should be left on anyone."
     ]
     if change_hair:
-        parts.append(f"Also add period hairstyles and accessories ({hair}) without changing their faces.")
+        parts.append(f"Also give them hairstyles and headwear that fit the theme ({hair}).")
     else:
-        parts.append("Keep everyone's hair as it is.")
+        parts.append("Keep everyone's natural hair, but any hat or headwear must fit the theme or be removed.")
     parts.append(f"Replace the background with {background}." if change_background
                  else "Keep the background exactly as it is.")
     parts.append(
+        "Keep every person's face and identity exactly as in the original photo: the same face shape, eyes, "
+        "nose, mouth, skin tone, age and expression, so each person is instantly recognisable as themselves. "
         "Keep the same number of people in the same poses, positions and body shapes, with the same camera "
         "angle, framing and lighting. Outfits are complete, well-fitted, modest and age-appropriate, like a "
         "high-quality costume photo shoot. Photorealistic, no text."
@@ -203,9 +208,9 @@ def new_photo():
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
     st.header("Options")
-    st.toggle("Keep everyone's real faces", value=True, key="opt_faces",
-              help="After the picture is made, each person's original face is blended back in, "
-                   "so everyone still looks like themselves.")
+    st.toggle("Paste original faces back", value=False, key="opt_faces",
+              help="The image model already keeps faces. Turn this on only if a face drifts: each person's "
+                   "original face is blended back in, which can look less natural.")
     st.toggle("Change hairstyles and accessories too", value=False, key="opt_hair",
               help="More fun, but the bigger the change, the more faces can drift.")
     st.toggle("Change the background to match", value=False, key="opt_background")
@@ -243,10 +248,10 @@ if S.pending:
         if not os.getenv("REPLICATE_API_TOKEN"):
             raise RuntimeError("add REPLICATE_API_TOKEN in .env or Streamlit secrets.")
         with st.spinner(f"Dressing everyone for {job['theme']}. This takes about 10-20 seconds..."):
-            img = edit_image(S.image_b64, job["prompt"], os.getenv("HISTORYTHEMES_IMAGE_MODEL"))
+            img = edit_image(S.image_b64, job["prompt"], os.getenv("HISTORYTHEMES_IMAGE_MODEL", IMAGE_MODEL))
         usage.record(S.user, "images")
         faces = None
-        if S.get("opt_faces", True):
+        if S.get("opt_faces", False):
             try:
                 img, faces = keep_faces(S.image, img)
             except Exception:  # never lose a paid-for picture over the face step

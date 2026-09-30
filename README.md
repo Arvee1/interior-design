@@ -83,12 +83,12 @@ The after picture is an AI impression of the concept, so it won't match every li
 
 # History Themes (second app)
 
-`historythemes.py` is a separate Streamlit app in the same repo. Upload a photo of one or more people, pick a theme, and it redraws everyone's outfits for that era using the same Replicate image model (FLUX Kontext Pro) as Restyle's after pictures.
+`historythemes.py` is a separate Streamlit app in the same repo. Upload a photo of one or more people, pick a theme, and it redraws everyone's outfits for that era using Google's Nano Banana 2 on Replicate, which keeps people recognisable. Every hat, accessory or modern item that doesn't fit the theme is swapped or removed.
 
 - **Themes:** Decades (1920s to Y2K), Ancient world (Roman, Greek, Egyptian, Stone Age), Historical eras (Viking to Wild West) and Just for fun (Pirates, Steampunk, Space Age, Year 2200, Fairytale Royalty), or type your own. Edit `THEMES` at the top of the file to add more.
-- **Real faces kept:** after each picture is made, `restyle/faces.py` finds every face in your original photo (with OpenCV's YuNet detector, `restyle/models/`, MIT licence), lines it up with the same person in the new picture and blends it back in, so people still look like themselves. Turn it off with "Keep everyone's real faces".
+- **Face fallback:** if a face still drifts, turn on "Paste original faces back". `restyle/faces.py` finds each face in your original photo (OpenCV's YuNet detector, `restyle/models/`, MIT licence), lines it up with the same person in the new picture and blends it in. Off by default because pasted faces can look less natural.
 - **Options:** also change hairstyles and accessories (off by default, since big changes make faces drift), and swap the background for a matching scene (off by default).
 - **Access and limits:** same `ALLOWED_USERS` sign-in as Restyle. Each user can upload 5 photos and create 10 themed pictures, tracked in `.historythemes_usage.json` and shown in the sidebar.
 - **Run locally:** `streamlit run historythemes.py`
 - **Deploy:** in Streamlit Community Cloud, create a second app from this repo with main file `historythemes.py`, and add `REPLICATE_API_TOKEN` and `ALLOWED_USERS` to its Secrets.
-- Optional: set `HISTORYTHEMES_IMAGE_MODEL` (for example `black-forest-labs/flux-kontext-max`) for a stronger image model.
+- Optional: set `HISTORYTHEMES_IMAGE_MODEL` to try another model, such as `google/nano-banana-pro` (higher quality, slower) or `black-forest-labs/flux-kontext-pro`.

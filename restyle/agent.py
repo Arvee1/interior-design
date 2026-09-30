@@ -73,15 +73,17 @@ def _jpeg_file(image_b64: str) -> io.BytesIO:
 
 
 def edit_image(image_b64: str, prompt: str, model: str | None = None) -> bytes:
-    """Edit a photo with a Replicate image-editing model (FLUX Kontext by default); returns JPEG bytes."""
+    """Edit a photo with a Replicate image-editing model (FLUX Kontext by default); returns JPEG bytes.
+    Also supports Google's Nano Banana models, which take the photo as a list in `image_input`."""
     import replicate
 
-    out = replicate.run(model or os.getenv("RESTYLE_IMAGE_MODEL", DEFAULT_IMAGE_MODEL), input={
-        "prompt": prompt,
-        "input_image": _jpeg_file(image_b64),
-        "aspect_ratio": "match_input_image",
-        "output_format": "jpg",
-    })
+    model = model or os.getenv("RESTYLE_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
+    params = {"prompt": prompt, "aspect_ratio": "match_input_image", "output_format": "jpg"}
+    if model.startswith("google/nano-banana"):
+        params["image_input"] = [_jpeg_file(image_b64)]
+    else:
+        params["input_image"] = _jpeg_file(image_b64)
+    out = replicate.run(model, input=params)
     if isinstance(out, list):
         out = out[0]
     if hasattr(out, "read"):
