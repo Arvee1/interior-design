@@ -67,6 +67,10 @@ wallpaper, new flooring, renovations or building work. This rule overrides anyth
   (e.g. "Three-seat sofa, 2200 mm, tight-back, oatmeal performance boucle on a timber plinth").
 - Cover the essentials first (seating, tables, storage, lighting, rug), then finishing layers
   (art, mirrors, plants, cushions, throws, objects).
+- Be bold: each concept should transform the room. Replace the existing movable furniture with new
+  pieces that differ clearly in shape, silhouette, material and colour, not the same pieces in a new
+  colour. Include the room's appliances where there are any (e.g. TV, fridge, freestanding oven,
+  washing machine, coffee machine) and restyle them to suit the concept.
 - Mark each piece essential or optional so the owner can phase the spend.
 - Price realistically for the owner's budget level and currency, as typical retail ranges.
 
@@ -92,7 +96,8 @@ wallpaper, new flooring, renovations or building work. This rule overrides anyth
 - Stay within budget; if a concept runs over, swap pieces rather than silently exceeding it.
 
 ## 9. Sustainability and value
-- Suggest keeping, reupholstering or repainting existing pieces where that suits the design.
+- Reuse at most one or two existing pieces per concept, and only when they genuinely suit it, unless
+  the owner's notes ask to keep more. Everything else should be new.
 - Mention second-hand or vintage options for thrifty budgets.
 - Put spend on the pieces used most (sofa, bed, mattress, dining chairs) and save on decor.
 
@@ -206,28 +211,37 @@ The owner has already seen these concepts: {', '.join(existing_names)}.
 Propose ONE new concept that feels clearly different from all of them."""
 
 
-IMAGE_PROMPT_CHARS = 1400  # the image model reads ~512 tokens; shorter keeps the keep-list prominent
+IMAGE_PROMPT_CHARS = 1800  # the image model reads ~512 tokens (~2000 characters)
 
 
 def after_image_prompt(concept: dict, fixed_features: list[str] | None = None) -> str:
     """Edit instruction for the image model: restyle the photo as this concept.
 
-    The keep-the-room rules go first and name each fixed feature seen in the photo, so they are never
-    trimmed and the model knows exactly what must survive the edit."""
-    names = [re.sub(r"^(a|an|the)\s+", "", f.strip().rstrip("."), flags=re.I) for f in (fixed_features or [])[:8]]
-    named = "".join(f" Keep the {n} exactly as it is." for n in names if n)
-    rule = (
-        "Edit only the movable furniture and decor in this photo. Do not remove, replace, move, resize, "
-        "cover or restyle any window, door, shutter, blind, window frame or doorway: every one stays in the "
-        f"same place, same size, same colour and fully visible, with nothing placed in front of it.{named} "
-        "Keep the walls, wall colour, floor, ceiling, built-ins and camera angle identical. "
-        "Do not add curtains or blinds. "
+    It leads with a bold, concrete transformation (every new piece with its shape, material and colour)
+    so the model restyles rather than recolours, and ends with a keep-list that names each fixed feature
+    seen in the photo. Only the design part is ever trimmed, so the keep-list always survives."""
+    names = [re.sub(r"^(a|an|the)\s+", "", f.strip().rstrip("."), flags=re.I)[:90]
+             for f in (fixed_features or [])[:8]]
+    keep = (
+        "Keep these exactly unchanged: "
+        + "".join(f"the {n}; " for n in names if n)
+        + "every window, door, shutter and blind in the same place, size and colour and fully visible, "
+        "with no curtains or blinds added and nothing placed in front of them; the walls and wall colour, "
+        "floor, ceiling, built-ins and camera angle. "
     )
-    palette = ", ".join(c["name"] for c in concept["palette"])
-    items = ", ".join(i["name"] for i in concept["items"])
-    design = (
-        f"Replace the furniture with a '{concept['name']}' look in {palette} tones "
-        f"({', '.join(concept['materials'][:4])}): {items}. "
+    pieces = "; ".join(f"{i['name']} ({i['description'].rstrip('.')})" for i in concept["items"])
+    change = (
+        f"Completely restyle this room as a '{concept['name']}' interior: {concept['summary']} "
+        "Remove all the existing movable furniture, appliances and decor, and replace them with new pieces "
+        "that look clearly different in shape, style, material and colour, not the old pieces recoloured. "
+        f"New pieces: {pieces}. "
+        f"Colour scheme: {', '.join(c['name'] for c in concept['palette'])}. "
+        f"Materials: {', '.join(concept['materials'][:5])}. "
+        "Style it fully like a magazine shoot, with layered textiles, cushions, a rug, plants, art, lamps "
+        "and decorative objects. "
     )
-    ending = "Photorealistic, natural light, no people, no text."
-    return rule + design[:max(0, IMAGE_PROMPT_CHARS - len(rule) - len(ending))] + ending
+    ending = "Photorealistic interior photograph, natural light, no people, no text."
+    room = max(0, IMAGE_PROMPT_CHARS - len(keep) - len(ending))
+    if len(change) > room:
+        change = change[:room].rsplit(" ", 1)[0] + ". "
+    return change + keep + ending
