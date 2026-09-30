@@ -109,6 +109,77 @@ THEMES: dict[str, dict[str, tuple[str, str, str, str]]] = {
 }
 ALL_THEMES = {name: t for group in THEMES.values() for name, t in group.items()}
 
+# Sports: pick a sport, then a team. Kits are described by colours so the model can draw them.
+_NRL_KIT = ("rugby league playing kit: a fitted V-neck jersey with a player number, shorts, long socks "
+            "and football boots")
+SPORTS: dict[str, dict] = {
+    "Basketball (NBA)": {
+        "emoji": "🏀",
+        "kit": "NBA basketball uniform: a sleeveless jersey with the team name and a player number, matching "
+               "shorts and basketball shoes",
+        "hair": "sweatbands and headbands",
+        "background": "an NBA arena basketball court with a packed crowd",
+        "teams": {
+            "Atlanta Hawks": "red, white and volt green", "Boston Celtics": "green and white",
+            "Brooklyn Nets": "black and white", "Charlotte Hornets": "teal and purple",
+            "Chicago Bulls": "red, black and white", "Cleveland Cavaliers": "wine and gold",
+            "Dallas Mavericks": "royal blue, navy and silver", "Denver Nuggets": "navy, yellow and red",
+            "Detroit Pistons": "red, royal blue and white", "Golden State Warriors": "royal blue and gold",
+            "Houston Rockets": "red, silver and black", "Indiana Pacers": "navy blue and gold",
+            "LA Clippers": "navy, red and blue", "Los Angeles Lakers": "purple and gold",
+            "Memphis Grizzlies": "navy, light blue and gold", "Miami Heat": "red, black and yellow",
+            "Milwaukee Bucks": "green, cream and blue", "Minnesota Timberwolves": "midnight blue, blue and green",
+            "New Orleans Pelicans": "navy, gold and red", "New York Knicks": "blue, orange and white",
+            "Oklahoma City Thunder": "blue, orange and navy", "Orlando Magic": "blue, black and silver",
+            "Philadelphia 76ers": "blue, red and white", "Phoenix Suns": "purple, orange and black",
+            "Portland Trail Blazers": "red, black and white", "Sacramento Kings": "purple, silver and black",
+            "San Antonio Spurs": "black, silver and white", "Toronto Raptors": "red, black and silver",
+            "Utah Jazz": "purple, gold and black", "Washington Wizards": "navy, red and white",
+        },
+    },
+    "Rugby League (NRL)": {
+        "emoji": "🏉",
+        "kit": _NRL_KIT,
+        "hair": "strapping tape and headgear",
+        "background": "a floodlit rugby league stadium with a big crowd",
+        "teams": {
+            "Brisbane Broncos": "maroon and gold", "Canberra Raiders": "lime green, white and blue",
+            "Canterbury-Bankstown Bulldogs": "blue and white", "Cronulla-Sutherland Sharks": "sky blue, black and white",
+            "Dolphins": "red, white and gold", "Gold Coast Titans": "sky blue, gold and navy",
+            "Manly Warringah Sea Eagles": "maroon and white", "Melbourne Storm": "purple, navy and gold",
+            "Newcastle Knights": "red and blue", "New Zealand Warriors": "navy blue, red and green",
+            "North Queensland Cowboys": "navy blue, gold and white", "Parramatta Eels": "blue and gold",
+            "Penrith Panthers": "black with red, green and white", "South Sydney Rabbitohs": "cardinal red and myrtle green",
+            "St George Illawarra Dragons": "red and white", "Sydney Roosters": "navy blue, red and white",
+            "Wests Tigers": "orange, black and white",
+        },
+    },
+    "State of Origin": {
+        "emoji": "🔥",
+        "kit": _NRL_KIT,
+        "hair": "strapping tape and headgear",
+        "background": "a packed State of Origin stadium at night",
+        "teams": {"Queensland Maroons": "maroon and gold", "New South Wales Blues": "sky blue and navy"},
+    },
+    "AFL": {
+        "emoji": "🏈",
+        "kit": "AFL playing kit: a sleeveless guernsey with a player number, shorts, long socks and football boots",
+        "hair": "headbands",
+        "background": "the MCG on grand final day with a huge crowd",
+        "teams": {
+            "Adelaide Crows": "navy, red and gold", "Brisbane Lions": "maroon, blue and gold",
+            "Carlton": "navy blue and white", "Collingwood": "black and white stripes",
+            "Essendon": "black with a red sash", "Fremantle": "purple and white",
+            "Geelong Cats": "navy blue and white hoops", "Gold Coast Suns": "red and gold",
+            "GWS Giants": "charcoal and orange", "Hawthorn": "brown and gold stripes",
+            "Melbourne Demons": "navy blue with a red yoke", "North Melbourne": "royal blue and white stripes",
+            "Port Adelaide": "black, white and teal", "Richmond": "black with a yellow sash",
+            "St Kilda": "red, white and black", "Sydney Swans": "red and white",
+            "West Coast Eagles": "royal blue and gold", "Western Bulldogs": "royal blue, red and white",
+        },
+    },
+}
+
 
 IMAGE_MODEL = "google/nano-banana-2"  # keeps people recognisable; override with HISTORYTHEMES_IMAGE_MODEL
 
@@ -119,8 +190,8 @@ def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, cha
     parts = [
         f"Restyle this photo so every person is dressed head to toe in {outfit}. Replace every item of "
         "clothing and every accessory that doesn't belong to this theme, including hats, caps, beanies, "
-        "sunglasses, headphones, watches, bags, lanyards, logos, modern shoes and trainers: swap each one for "
-        "a piece that fits the theme, or remove it. Nothing modern should be left on anyone."
+        "sunglasses, headphones, watches, bags, lanyards, other logos and everyday shoes: swap each one for "
+        "a piece that fits the theme, or remove it. Nothing that doesn't fit the theme should be left on anyone."
     ]
     if change_hair:
         parts.append(f"Also give them hairstyles and headwear that fit the theme ({hair}).")
@@ -295,16 +366,29 @@ with photo_col:
 
 with pick_col:
     st.subheader("Pick a theme")
-    group = st.radio("Category", list(THEMES), horizontal=True, label_visibility="collapsed", key="group")
-    names = list(THEMES[group])
-    theme = st.pills("Theme", names, default=names[0], key=f"theme_{group}", label_visibility="collapsed",
-                     format_func=lambda n: f"{THEMES[group][n][0]} {n}")
+    group = st.radio("Category", [*THEMES, "Sports"], horizontal=True, label_visibility="collapsed", key="group")
+    theme = team = None
+    if group == "Sports":
+        sport = st.pills("Sport", list(SPORTS), default=list(SPORTS)[0], key="sport", label_visibility="collapsed",
+                         format_func=lambda n: f"{SPORTS[n]['emoji']} {n}")
+        if sport:
+            team = st.selectbox("Team", list(SPORTS[sport]["teams"]), key=f"team_{sport}")
+    else:
+        names = list(THEMES[group])
+        theme = st.pills("Theme", names, default=names[0], key=f"theme_{group}", label_visibility="collapsed",
+                         format_func=lambda n: f"{THEMES[group][n][0]} {n}")
     custom = st.text_input("Or describe your own theme",
                            placeholder="e.g. 1940s Hollywood glamour, or superheroes in a comic book")
     if custom.strip():
         label = custom.strip()[:80]
         prompt = theme_prompt(f"{label} costumes", f"hairstyles and accessories that suit {label}",
                               f"a setting that suits {label}", S.opt_hair, S.opt_background)
+    elif team:
+        label = team
+        s_ = SPORTS[sport]
+        outfit = (f"the {team} {s_['kit']}, in the team's colours ({s_['teams'][team]}), with the team name "
+                  f"'{team}' on the front")
+        prompt = theme_prompt(outfit, s_["hair"], s_["background"], S.opt_hair, S.opt_background)
     elif theme:
         label = theme
         _, outfit, hair, background = THEMES[group][theme]
