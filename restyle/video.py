@@ -57,11 +57,25 @@ def fetch_from_link(url: str, workdir: str | Path) -> Path:
         "noplaylist": True, "quiet": True, "no_warnings": True, "noprogress": True, "overwrites": True,
         "match_filter": too_long, "ffmpeg_location": FFMPEG,
     }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url.strip(), download=True)
+    # YouTube sometimes refuses the normal route (HTTP 403), especially from cloud servers.
+    # If so, retry with its streaming (HLS) format, which is a separate delivery path and is refused less.
+    attempts = [{}, {"format": "bv*[protocol^=m3u8][height<=720]+ba[protocol^=m3u8]/b[protocol^=m3u8]"}]
+    error = None
+    for extra in attempts:
+        try:
+            with yt_dlp.YoutubeDL({**options, **extra}) as ydl:
+                info = ydl.extract_info(url.strip(), download=True)
+        except yt_dlp.utils.DownloadError as e:
+            error = str(e)
+            continue
         if not info or not info.get("requested_downloads"):
             raise ValueError(too_long(info or {}) or "That video couldn't be downloaded.")
         return Path(info["requested_downloads"][0]["filepath"])
+    if any(sign in (error or "") for sign in ("403", "Sign in to confirm", "not a bot")):
+        raise ValueError("YouTube blocked this download. It often refuses requests from hosted sites. "
+                         "Run the app on your own computer, or download the video there and use "
+                         "\"Upload a video file\" instead.")
+    raise ValueError(f"That video couldn't be downloaded: {(error or 'unknown error')[:200]}")
 
 
 def trim(source: str | Path, start: float, seconds: float, workdir: str | Path) -> bytes:
