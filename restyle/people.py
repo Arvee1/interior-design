@@ -41,9 +41,10 @@ def _even(v: float) -> int:
 
 
 def find_people(clip: bytes) -> tuple[Image.Image | None, list[dict]]:
-    """Return (first frame, people). Each person has 'face' (their face box in the first frame) and
+    """Return (first frame, people). Each person has 'face' (their face box in the first frame),
     'box' (x, y, w, h: the part of the frame holding just that person for the whole clip, or None
-    if they can't be separated from the others). People are ordered left to right."""
+    if they can't be separated from the others) and 'seen' (the share of the clip, 0 to 1, in which
+    their face was found). People are ordered left to right."""
     frames = _frames(clip)
     if not frames:
         return None, []
@@ -53,6 +54,7 @@ def find_people(clip: bytes) -> tuple[Image.Image | None, list[dict]]:
     # Follow each person through the clip: [x0, y0, x1, y1] covering everywhere their face goes.
     last = [f[:4].copy() for f in start]
     spans = [[f[0], f[1], f[0] + f[2], f[1] + f[3]] for f in start]
+    hits = [1] * len(start)
     for frame in frames[1:]:
         found = _detect(frame)
         for i, box in enumerate(last):
@@ -62,6 +64,7 @@ def find_people(clip: bytes) -> tuple[Image.Image | None, list[dict]]:
                 continue
             f = min(near, key=lambda f: np.hypot(f[0] + f[2] / 2 - cx, f[1] + f[3] / 2 - cy))
             last[i] = f[:4].copy()
+            hits[i] += 1
             s = spans[i]
             spans[i] = [min(s[0], f[0]), min(s[1], f[1]), max(s[2], f[0] + f[2]), max(s[3], f[1] + f[3])]
 
@@ -83,7 +86,8 @@ def find_people(clip: bytes) -> tuple[Image.Image | None, list[dict]]:
         x, y = _even(max(0, left)), _even(max(0, top))
         w, h = _even(min(width, right) - x), _even(height - y)
         ok = separable and w >= 1.5 * fw and h >= 2 * fh
-        people.append({"face": tuple(int(v) for v in face[:4]), "box": (x, y, w, h) if ok else None})
+        people.append({"face": tuple(int(v) for v in face[:4]), "box": (x, y, w, h) if ok else None,
+                       "seen": hits[i] / len(frames)})
     return first, people
 
 
@@ -102,12 +106,15 @@ def draw_people(frame: Image.Image, people: list[dict], chosen: int | None = Non
 
 
 def crop_clip(clip: bytes, box: tuple[int, int, int, int]) -> bytes:
-    """The part of the clip inside box (x, y, w, h), as its own video with the original sound."""
+    """The part of the clip inside box (x, y, w, h), as its own video with the original sound.
+    Small pieces are enlarged (shorter side 720px) so the swap model can still make out the person."""
     x, y, w, h = box
+    grow = 720 / min(w, h)
+    scale = f",scale={_even(w * grow)}:{_even(h * grow)}:flags=lanczos" if grow > 1.1 else ""
     with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
         src, out = Path(tmp) / "in.mp4", Path(tmp) / "out.mp4"
         src.write_bytes(clip)
-        result = _run(["-y", "-i", str(src), "-vf", f"crop={w}:{h}:{x}:{y}", "-c:v", "libx264", "-preset", "veryfast",
+        result = _run(["-y", "-i", str(src), "-vf", f"crop={w}:{h}:{x}:{y}{scale}", "-c:v", "libx264", "-preset", "veryfast",
                        "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", str(out)])
         if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
             raise RuntimeError("That clip couldn't be cut down to one person.")

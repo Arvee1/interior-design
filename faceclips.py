@@ -264,9 +264,18 @@ if mode == "main":
             st.image(people.draw_people(frame, found_people, target), width=520,
                      caption="Only the highlighted area is changed. Everyone else stays as they are.")
             box = found_people[target]["box"]
+            seen = found_people[target]["seen"]
+            if seen < 0.85:
+                st.warning(f"This person's face is only visible for about {seen:.0%} of the clip. The swap can "
+                           "fail or look wrong when they turn away, leave the shot or the camera cuts. "
+                           "A part where they stay in view works best.")
             if box is None:
                 st.warning("These people cross over each other in this clip, so one can't be changed without "
                            "the other. Cut a part where they stay apart, or everyone in shot will be replaced.")
+        elif len(found_people) == 1 and found_people[0]["seen"] < 0.85:
+            st.warning(f"The person's face is only visible for about {found_people[0]['seen']:.0%} of the clip. "
+                       "The swap can fail or look wrong when they turn away, leave the shot or the camera "
+                       "cuts. A part where they stay in view works best.")
         elif not found_people:
             st.caption("No faces found at the start of the clip, so the whole picture is sent to the model. "
                        "Start the clip where the person's face is visible to choose who to replace.")
@@ -308,7 +317,12 @@ if st.button("Swap", type="primary", disabled=not ready, use_container_width=Tru
         S.results.insert(0, {"video": out, "label": MODES[mode]})
         st.rerun()
     except Exception as e:  # surface API errors in the UI
-        st.error(f"That didn't work: {str(e)[:300]}")
+        if "zero-size array" in str(e):  # the swap model found no person in some frames
+            st.error("The model couldn't find a person in every frame of this clip. Cut a part that is one "
+                     "continuous shot (no camera cuts) where the person's face and upper body stay in view, "
+                     "then try again.")
+        else:
+            st.error(f"That didn't work: {str(e)[:300]}")
 if not S.clip:
     st.caption("Cut a clip first (step 2).")
 elif not person_jpeg:
