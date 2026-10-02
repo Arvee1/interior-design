@@ -101,7 +101,7 @@ The after picture is an AI impression of the concept, so it won't match every li
 2. **Pick the part to use:** choose a start time and length, up to 30 seconds. The clip is cut and scaled to 720p with a bundled `ffmpeg` (`imageio-ffmpeg`), so no system install is needed.
 3. **Upload a photo and pick the person:** if the photo has several people, you choose which one to put in.
 4. **Swap**, one of three ways:
-   - **Whole person, main person in the clip:** `wan-video/wan-2.2-animate-replace` replaces the most prominent person and keeps their movements, expressions, mouth movements and the original sound. About US$0.05 per second at 720p, US$0.02 at 480p.
+   - **Whole person:** `wan-video/wan-2.2-animate-replace` replaces a person and keeps their movements, expressions, mouth movements and the original sound. When the clip has several people, you pick who: the app follows each face through the clip (`restyle/people.py`), sends only that person's part of the frame to the model and pastes the result back with soft edges, so the others are untouched. The photo's background is removed first (`bria/remove-background`, about US$0.02) so the model gets a clean cut-out. About US$0.05 per second at 720p, US$0.02 at 480p.
    - **Whole person, you say who:** `kwaivgi/kling-v3-omni-video` edits the clip from a description such as "the man driving the car". Use it when several people are in shot. Clips must be 3 to 10 seconds. About US$0.17 per second.
    - **Face only:** a roop-based face swap (`okaris/roop`, then `arabyai-replicate/roop_face_swap` if that fails). Set `FACECLIPS_MODEL` to force one.
 

@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from restyle import video  # noqa: E402
+from restyle import people, video  # noqa: E402
 from restyle.agent import prepare_image  # noqa: E402
 from restyle.faces import _detect as detect_faces  # noqa: E402
 from restyle.usage import Tracker  # noqa: E402
@@ -86,7 +86,7 @@ def quota_left(kind: str) -> int:
     return usage.remaining(S.user, kind)
 
 
-for k, v in {"workdir": None, "source": None, "source_len": 0.0, "clip": None, "clip_len": 0.0, "face": None, "face_sig": None,
+for k, v in {"workdir": None, "source": None, "source_len": 0.0, "clip": None, "clip_len": 0.0, "clip_people": None, "face": None, "face_sig": None,
              "results": [], "error": None, "n": 0}.items():
     S.setdefault(k, v)
 if S.workdir is None or not Path(S.workdir).exists():
@@ -94,7 +94,7 @@ if S.workdir is None or not Path(S.workdir).exists():
 
 
 def start_over():
-    S.source = S.clip = S.face = S.face_sig = None
+    S.source = S.clip = S.face = S.face_sig = S.clip_people = None
     S.source_len, S.results = 0.0, []
     S.n += 1  # fresh uploaders
 
@@ -182,7 +182,7 @@ with clip_col:
             with st.spinner("Cutting the clip..."):
                 S.clip_len = min(length, S.source_len - start)
                 S.clip = video.trim(S.source, start, S.clip_len, S.workdir)
-            S.results = []
+            S.results, S.clip_people = [], None
         except Exception as e:
             st.error(str(e))
     if S.clip:
@@ -248,12 +248,28 @@ MODES = {
     "face": "Face only",
 }
 mode = st.radio("What to swap", list(MODES), format_func=MODES.get, key="mode")
-who, resolution, problem = "", "720", None
+who, resolution, problem, box = "", "720", None, None
 lo, hi = video.DESCRIBED_SECONDS
 if mode == "main":
-    st.caption("Replaces the most prominent person with the person from your photo. They keep the same "
-               "movements, expressions and mouth movements, and the original sound stays. Works best when "
-               "one person is clearly the main subject of the clip.")
+    st.caption("Replaces a person with the person from your photo. They keep the same movements, expressions "
+               "and mouth movements, and the original sound stays.")
+    if S.clip:
+        if S.clip_people is None:
+            with st.spinner("Looking for people in the clip..."):
+                S.clip_people = people.find_people(S.clip)
+        frame, found_people = S.clip_people
+        if len(found_people) > 1:
+            target = st.radio("Who in the clip should be replaced?", range(len(found_people)), horizontal=True,
+                              format_func=lambda i: f"Person {i + 1}")
+            st.image(people.draw_people(frame, found_people, target), width=520,
+                     caption="Only the highlighted area is changed. Everyone else stays as they are.")
+            box = found_people[target]["box"]
+            if box is None:
+                st.warning("These people cross over each other in this clip, so one can't be changed without "
+                           "the other. Cut a part where they stay apart, or everyone in shot will be replaced.")
+        elif not found_people:
+            st.caption("No faces found at the start of the clip, so the whole picture is sent to the model. "
+                       "Start the clip where the person's face is visible to choose who to replace.")
     resolution = st.radio("Quality", ["720", "480"], horizontal=True,
                           format_func=lambda r: {"720": "Sharper (720p)", "480": "Cheaper and faster (480p)"}[r])
     cost = S.clip_len * video.COST_PER_SECOND[resolution]
@@ -283,7 +299,7 @@ if st.button("Swap", type="primary", disabled=not ready, use_container_width=Tru
             raise RuntimeError("add REPLICATE_API_TOKEN in .env or Streamlit secrets.")
         with st.spinner("Swapping. This usually takes a few minutes, longer for longer clips..."):
             if mode == "main":
-                out = video.replace_person(S.clip, person_jpeg, resolution)
+                out = video.replace_person(S.clip, person_jpeg, resolution, box)
             elif mode == "described":
                 out = video.replace_described_person(S.clip, person_jpeg, who)
             else:

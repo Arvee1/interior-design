@@ -152,18 +152,52 @@ DESCRIBED_SECONDS = (3, 10)                          # clip length the prompt-dr
 COST_PER_SECOND = {"480": 0.02, "720": 0.05, "described": 0.168}  # USD, from Replicate's pricing pages
 
 
-def replace_person(clip: bytes, person_jpeg: bytes, resolution: str = "720") -> bytes:
-    """Replace the main person in the clip with the person in the photo (Wan 2.2 Animate Replace).
-    They keep doing and saying the same thing; background, camera and sound stay."""
+CUTOUT_MODEL = "bria/remove-background"  # official model, about US$0.02 per photo
+
+
+def cut_out_person(person_jpeg: bytes) -> bytes:
+    """The person on a plain background, so the swap model isn't distracted by what's around them.
+    Returns the photo unchanged if the cut-out step fails."""
     import replicate
 
+    from .people import on_plain_background
+
+    try:
+        out = replicate.run(os.getenv("FACECLIPS_CUTOUT_MODEL", CUTOUT_MODEL),
+                            input={"image": _named(person_jpeg, "person.jpg")})
+        item = out[0] if isinstance(out, (list, tuple)) else out
+        if hasattr(item, "read"):
+            data = item.read()
+        else:
+            with urllib.request.urlopen(str(item)) as resp:
+                data = resp.read()
+        return on_plain_background(data)
+    except Exception:
+        return person_jpeg
+
+
+def replace_person(clip: bytes, person_jpeg: bytes, resolution: str = "720",
+                   box: tuple[int, int, int, int] | None = None) -> bytes:
+    """Replace a person in the clip with the person in the photo (Wan 2.2 Animate Replace).
+    They keep doing and saying the same thing; background, camera and sound stay.
+
+    The model replaces everyone it sees, so when `box` (x, y, w, h) is given, only that part of the
+    frame is sent to it and the result is pasted back, leaving the other people untouched."""
+    import replicate
+
+    from .people import crop_clip, paste_back
+
+    piece = crop_clip(clip, box) if box else clip
     out = replicate.run(os.getenv("FACECLIPS_PERSON_MODEL", PERSON_MODEL), input={
-        "video": _named(clip, "clip.mp4"),
-        "character_image": _named(person_jpeg, "person.jpg"),
+        "video": _named(piece, "clip.mp4"),
+        "character_image": _named(cut_out_person(person_jpeg), "person.jpg"),
         "resolution": resolution if resolution in ("480", "720") else "720",
         "merge_audio": True,
     })
-    return restore_audio(_read_video(out), clip)
+    result = _read_video(out)
+    if box:
+        return paste_back(clip, result, box)
+    return restore_audio(result, clip)
 
 
 def for_described_model(clip: bytes) -> bytes:
