@@ -167,13 +167,14 @@ def replace_person(clip: bytes, person_jpeg: bytes, resolution: str = "720") -> 
 
 
 def for_described_model(clip: bytes) -> bytes:
-    """Re-encode a clip so its shorter side is 720px, which the prompt-driven model requires."""
+    """Re-encode a clip so its shorter side is 720px, which the prompt-driven model requires, and keep
+    it compact (about 2 MB for 10 seconds) because it is sent embedded in the request."""
     with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
         src, out = Path(tmp) / "in.mp4", Path(tmp) / "out.mp4"
         src.write_bytes(clip)
         result = _run(["-y", "-i", str(src), "-vf", "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'",
-                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-                       "-c:a", "copy", "-movflags", "+faststart", str(out)])
+                       "-c:v", "libx264", "-preset", "medium", "-crf", "24", "-maxrate", "1500k", "-bufsize", "3000k",
+                       "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(out)])
         if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
             raise RuntimeError("That clip couldn't be prepared for the model.")
         return out.read_bytes()
@@ -195,7 +196,9 @@ def replace_described_person(clip: bytes, person_jpeg: bytes, who: str) -> bytes
     (Kling 3.0 Omni video edit). The clip must be 3-10 seconds long."""
     import replicate
 
-    out = replicate.run(os.getenv("FACECLIPS_DESCRIBED_MODEL", DESCRIBED_MODEL), input={
+    # This model checks that its inputs end in .mp4/.jpg. Uploaded files get an address with no
+    # extension and are rejected, so embed them in the request (base64), which carries the file type.
+    out = replicate.run(os.getenv("FACECLIPS_DESCRIBED_MODEL", DESCRIBED_MODEL), file_encoding_strategy="base64", input={
         "prompt": described_prompt(who),
         "reference_video": _named(for_described_model(clip), "clip.mp4"),
         "video_reference_type": "base",
