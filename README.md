@@ -92,3 +92,18 @@ The after picture is an AI impression of the concept, so it won't match every li
 - **Run locally:** `streamlit run historythemes.py`
 - **Deploy:** in Streamlit Community Cloud, create a second app from this repo with main file `historythemes.py`, and add `REPLICATE_API_TOKEN` and `ALLOWED_USERS` to its Secrets.
 - Optional: set `HISTORYTHEMES_IMAGE_MODEL` to try another model, such as `google/nano-banana-pro` (higher quality, slower) or `black-forest-labs/flux-kontext-pro`.
+
+# Face Clips (third app)
+
+`faceclips.py` puts a face from your photo onto the main character in a short video clip.
+
+1. **Load a video:** paste a YouTube link (fetched with `yt-dlp`) or upload an MP4/MOV/WebM file.
+2. **Pick the part to use:** choose a start time and length, up to 30 seconds. The clip is cut and scaled to 720p with a bundled `ffmpeg` (`imageio-ffmpeg`), so no system install is needed.
+3. **Upload a face photo:** if the photo has several faces, you choose which one.
+4. **Swap:** the clip and face go to a roop-based face-swap model on Replicate. The default is `xrunda/hello`; set `FACECLIPS_MODEL` to `okaris/roop` or `arabyai-replicate/roop_face_swap` to try another.
+
+- **Limits:** 5 video loads and 5 face swaps per user, in `.faceclips_usage.json`, shown in the sidebar. Same `ALLOWED_USERS` sign-in as the other apps.
+- **One face per swap:** these models replace one face in the clip (usually the most prominent), not a chosen character.
+- **YouTube links may fail when hosted:** YouTube often blocks cloud servers, and downloading is against its terms of service. Uploading a file always works.
+- **Consent:** you must tick a box confirming everyone whose face is used has agreed.
+- **Run locally:** `streamlit run faceclips.py`. **Deploy:** create another Streamlit Cloud app from this repo with main file `faceclips.py`, and add `REPLICATE_API_TOKEN` and `ALLOWED_USERS` to its Secrets.

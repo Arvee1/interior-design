@@ -6,3 +6,5 @@ pydantic>=2.7
 python-dotenv>=1.0
 replicate>=1.0
 opencv-python-headless>=4.8
+yt-dlp>=2026.1
+imageio-ffmpeg>=0.5
