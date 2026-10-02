@@ -115,8 +115,8 @@ def restore_audio(swapped: bytes, clip: bytes) -> bytes:
         video_in, audio_in, out = Path(tmp) / "swapped.mp4", Path(tmp) / "clip.mp4", Path(tmp) / "out.mp4"
         video_in.write_bytes(swapped)
         audio_in.write_bytes(clip)
-        if "Audio:" not in _run(["-i", str(audio_in)]).stderr:
-            return swapped
+        if "Audio:" in _run(["-i", str(video_in)]).stderr or "Audio:" not in _run(["-i", str(audio_in)]).stderr:
+            return swapped  # the result already has sound, or there is none to add
         result = _run(["-y", "-i", str(video_in), "-i", str(audio_in), "-map", "0:v:0", "-map", "1:a:0",
                        "-c:v", "copy", "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(out)])
         if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
@@ -143,6 +143,67 @@ def swap_face(clip: bytes, face_jpeg: bytes, model: str | None = None) -> bytes:
         except Exception as e:  # a model that's broken or offline shouldn't sink the swap; try the next
             error = f"{name}: {e}"
     raise RuntimeError(error or "no face-swap model is available.")
+
+
+# Whole-person replacement (official Replicate models, run by name).
+PERSON_MODEL = "wan-video/wan-2.2-animate-replace"   # replaces the main person; keeps motion, expressions, lips
+DESCRIBED_MODEL = "kwaivgi/kling-v3-omni-video"      # prompt-driven edit: you say who to replace
+DESCRIBED_SECONDS = (3, 10)                          # clip length the prompt-driven model accepts
+COST_PER_SECOND = {"480": 0.02, "720": 0.05, "described": 0.168}  # USD, from Replicate's pricing pages
+
+
+def replace_person(clip: bytes, person_jpeg: bytes, resolution: str = "720") -> bytes:
+    """Replace the main person in the clip with the person in the photo (Wan 2.2 Animate Replace).
+    They keep doing and saying the same thing; background, camera and sound stay."""
+    import replicate
+
+    out = replicate.run(os.getenv("FACECLIPS_PERSON_MODEL", PERSON_MODEL), input={
+        "video": _named(clip, "clip.mp4"),
+        "character_image": _named(person_jpeg, "person.jpg"),
+        "resolution": resolution if resolution in ("480", "720") else "720",
+        "merge_audio": True,
+    })
+    return restore_audio(_read_video(out), clip)
+
+
+def for_described_model(clip: bytes) -> bytes:
+    """Re-encode a clip so its shorter side is 720px, which the prompt-driven model requires."""
+    with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
+        src, out = Path(tmp) / "in.mp4", Path(tmp) / "out.mp4"
+        src.write_bytes(clip)
+        result = _run(["-y", "-i", str(src), "-vf", "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'",
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                       "-c:a", "copy", "-movflags", "+faststart", str(out)])
+        if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+            raise RuntimeError("That clip couldn't be prepared for the model.")
+        return out.read_bytes()
+
+
+def described_prompt(who: str) -> str:
+    who = " ".join(who.split()).strip(" .")[:200]
+    return (
+        f"Replace {who} in <<<video_1>>> with the person shown in <<<image_1>>>: their face, hair, body and "
+        "overall look. The new person does exactly what the original person does: the same movements, "
+        "gestures, facial expressions and mouth movements at the same moments, so they appear to say the same "
+        "words. Change only that one person. Everyone else, the background, the camera movement, the framing "
+        "and the lighting stay exactly as in <<<video_1>>>."
+    )
+
+
+def replace_described_person(clip: bytes, person_jpeg: bytes, who: str) -> bytes:
+    """Replace the person described by `who` (e.g. 'the man driving') with the person in the photo
+    (Kling 3.0 Omni video edit). The clip must be 3-10 seconds long."""
+    import replicate
+
+    out = replicate.run(os.getenv("FACECLIPS_DESCRIBED_MODEL", DESCRIBED_MODEL), input={
+        "prompt": described_prompt(who),
+        "reference_video": _named(for_described_model(clip), "clip.mp4"),
+        "video_reference_type": "base",
+        "reference_images": [_named(person_jpeg, "person.jpg")],
+        "keep_original_sound": True,
+        "mode": "standard",
+    })
+    return restore_audio(_read_video(out), clip)
 
 
 def new_workdir() -> str:

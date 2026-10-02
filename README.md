@@ -95,15 +95,17 @@ The after picture is an AI impression of the concept, so it won't match every li
 
 # Face Clips (third app)
 
-`faceclips.py` puts a face from your photo onto the main character in a short video clip.
+`faceclips.py` swaps a person from your photo into a short video clip. They keep doing and saying the same thing; only the person changes.
 
-1. **Load a video:** paste a YouTube link (fetched with `yt-dlp`) or upload an MP4/MOV/WebM file.
+1. **Load a video:** paste a YouTube link (fetched with `yt-dlp`; only works when run locally, because YouTube blocks hosted sites) or upload an MP4/MOV/WebM file.
 2. **Pick the part to use:** choose a start time and length, up to 30 seconds. The clip is cut and scaled to 720p with a bundled `ffmpeg` (`imageio-ffmpeg`), so no system install is needed.
-3. **Upload a face photo:** if the photo has several faces, you choose which one.
-4. **Swap:** the clip and face go to a roop-based face-swap model on Replicate. By default it tries `okaris/roop`, then `arabyai-replicate/roop_face_swap` if that fails; set `FACECLIPS_MODEL` to force one. (`xrunda/hello` hasn't been updated since 2023 and now fails when returning its output.)
+3. **Upload a photo and pick the person:** if the photo has several people, you choose which one to put in.
+4. **Swap**, one of three ways:
+   - **Whole person, main person in the clip:** `wan-video/wan-2.2-animate-replace` replaces the most prominent person and keeps their movements, expressions, mouth movements and the original sound. About US$0.05 per second at 720p, US$0.02 at 480p.
+   - **Whole person, you say who:** `kwaivgi/kling-v3-omni-video` edits the clip from a description such as "the man driving the car". Use it when several people are in shot. Clips must be 3 to 10 seconds. About US$0.17 per second.
+   - **Face only:** a roop-based face swap (`okaris/roop`, then `arabyai-replicate/roop_face_swap` if that fails). Set `FACECLIPS_MODEL` to force one.
 
-- **Limits:** 5 video loads and 5 face swaps per user, in `.faceclips_usage.json`, shown in the sidebar. Same `ALLOWED_USERS` sign-in as the other apps.
-- **One face per swap:** these models replace one face in the clip (usually the most prominent), not a chosen character.
-- **YouTube links may fail when hosted:** YouTube often blocks cloud servers, and downloading is against its terms of service. Uploading a file always works.
-- **Consent:** you must tick a box confirming everyone whose face is used has agreed.
+- **Sound:** if a model returns a silent video, the original clip's audio is added back.
+- **Limits:** 5 video loads and 5 swaps per user, in `.faceclips_usage.json`, shown in the sidebar. Same `ALLOWED_USERS` sign-in as the other apps.
+- **Consent:** you must tick a box confirming everyone whose picture is used has agreed.
 - **Run locally:** `streamlit run faceclips.py`. **Deploy:** create another Streamlit Cloud app from this repo with main file `faceclips.py`, and add `REPLICATE_API_TOKEN` and `ALLOWED_USERS` to its Secrets.

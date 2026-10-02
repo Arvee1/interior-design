@@ -1,4 +1,4 @@
-"""Face Clips - put a face from your photo onto the main character in a short video clip.
+"""Face Clips - swap a person from your photo into a short video clip (whole person or face only).
 
 Run with:  streamlit run faceclips.py
 """
@@ -44,7 +44,7 @@ for _name in ("REPLICATE_API_TOKEN",):
 
 usage = Tracker(
     limits={"videos": 5, "swaps": 5},
-    labels={"videos": "Videos loaded", "swaps": "Face swaps"},
+    labels={"videos": "Videos loaded", "swaps": "Swaps"},
     file=os.getenv("FACECLIPS_USAGE_FILE", Path(__file__).resolve().parent / ".faceclips_usage.json"),
 )
 
@@ -86,7 +86,7 @@ def quota_left(kind: str) -> int:
     return usage.remaining(S.user, kind)
 
 
-for k, v in {"workdir": None, "source": None, "source_len": 0.0, "clip": None, "face": None, "face_sig": None,
+for k, v in {"workdir": None, "source": None, "source_len": 0.0, "clip": None, "clip_len": 0.0, "face": None, "face_sig": None,
              "results": [], "error": None, "n": 0}.items():
     S.setdefault(k, v)
 if S.workdir is None or not Path(S.workdir).exists():
@@ -112,8 +112,8 @@ with st.sidebar:
     st.header("How it works")
     st.markdown("1. Load a video: paste a YouTube link or upload a file.\n"
                 f"2. Pick the part you want (up to {video.MAX_CLIP_SECONDS} seconds).\n"
-                "3. Upload a photo with the face to use.\n"
-                "4. Swap. The main face in the clip is replaced.")
+                "3. Upload a photo and pick the person to put in.\n"
+                "4. Swap the whole person (they keep doing and saying the same thing) or just the face.")
     st.divider()
     if not os.getenv("REPLICATE_API_TOKEN"):
         key = st.text_input("Replicate API token", type="password",
@@ -132,7 +132,7 @@ with st.sidebar:
     st.button("Sign out", on_click=_log_out, use_container_width=True)
 
 st.title("Face Clips 🎬")
-st.caption("Star in your favourite scene: put a face from your photo onto the main character in a clip.")
+st.caption("Star in your favourite scene: swap a person from your photo into a clip.")
 
 if S.error:
     st.error(S.error)
@@ -180,82 +180,135 @@ with clip_col:
     if st.button("Cut this part", type="primary" if S.clip is None else "secondary"):
         try:
             with st.spinner("Cutting the clip..."):
-                S.clip = video.trim(S.source, start, min(length, S.source_len - start), S.workdir)
+                S.clip_len = min(length, S.source_len - start)
+                S.clip = video.trim(S.source, start, S.clip_len, S.workdir)
             S.results = []
         except Exception as e:
             st.error(str(e))
     if S.clip:
         st.video(S.clip)
 
-# ---------------------------------------------------------------- 3. the face
+# ---------------------------------------------------------------- 3. the person
+def person_crops(photo, face) -> tuple:
+    """(whole-person crop, face crop) for one detected face: the body crop takes the area around
+    and below the face, so one person can be lifted out of a group photo."""
+    x, y, w, h = (int(v) for v in face[:4])
+    body = photo.crop((max(0, x - int(w * 1.7)), max(0, y - int(h * 0.8)),
+                       min(photo.width, x + w + int(w * 1.7)), min(photo.height, y + h + int(h * 7))))
+    pad = int(max(w, h) * 0.6)
+    head = photo.crop((max(0, x - pad), max(0, y - pad), min(photo.width, x + w + pad), min(photo.height, y + h + pad)))
+    return body, head
+
+
+def as_jpeg(img, min_side: int = 0) -> bytes:
+    if min_side and min(img.size) < min_side:  # some models reject small images
+        scale = min_side / min(img.size)
+        img = img.resize((round(img.width * scale), round(img.height * scale)))
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
+person_jpeg = face_jpeg = None
 with face_col:
-    st.subheader("3. Upload the face to use")
+    st.subheader("3. Upload a photo of the person to put in")
     photo = st.file_uploader("Photo", type=["jpg", "jpeg", "png", "webp"], key=f"face_{S.n}",
-                             help="A clear, front-on, well-lit photo works best.")
+                             help="A clear, well-lit photo. Showing the upper body or whole body works best "
+                                  "for swapping the whole person.")
     if photo and (photo.name, photo.size) != S.face_sig:
         try:
             _, S.face = prepare_image(photo.getvalue())
             S.face_sig = (photo.name, photo.size)
         except Exception:
             st.error("That photo couldn't be opened. Try a JPEG or PNG.")
-    face_jpeg = None
     if S.face is not None:
-        found = detect_faces(cv2.cvtColor(np.array(S.face), cv2.COLOR_RGB2BGR))
+        found = sorted(detect_faces(cv2.cvtColor(np.array(S.face), cv2.COLOR_RGB2BGR)), key=lambda f: f[0])[:5]
         if not found:
             st.image(S.face, width=220)
-            st.warning("No face found in that photo. Try a clearer, front-on photo.")
+            st.warning("No person found in that photo. Try a clearer photo where the face is visible.")
         else:
-            crops = []
-            for f in sorted(found, key=lambda f: f[0]):  # left to right
-                x, y, w, h = (int(v) for v in f[:4])
-                pad = int(max(w, h) * 0.6)
-                crops.append(S.face.crop((max(0, x - pad), max(0, y - pad),
-                                          min(S.face.width, x + w + pad), min(S.face.height, y + h + pad))))
+            crops = [person_crops(S.face, f) for f in found]  # left to right
             pick = 0
             if len(crops) > 1:
-                st.caption(f"Found {len(crops)} faces. Choose which one to use.")
-                for col, (i, crop) in zip(st.columns(min(len(crops), 5)), enumerate(crops[:5])):
-                    col.image(crop, caption=f"Face {i + 1}")
-                pick = st.radio("Face", range(min(len(crops), 5)), format_func=lambda i: f"Face {i + 1}",
+                st.caption(f"Found {len(crops)} people. Choose who to put in the clip.")
+                for col, (i, (body, _)) in zip(st.columns(len(crops)), enumerate(crops)):
+                    col.image(body, caption=f"Person {i + 1}")
+                pick = st.radio("Person", range(len(crops)), format_func=lambda i: f"Person {i + 1}",
                                 horizontal=True, label_visibility="collapsed")
             else:
-                st.image(crops[0], width=220)
-            buf = io.BytesIO()
-            crops[pick].save(buf, format="JPEG", quality=92)
-            face_jpeg = buf.getvalue()
+                st.image(crops[0][0], width=220)
+            person_jpeg, face_jpeg = as_jpeg(crops[pick][0], min_side=320), as_jpeg(crops[pick][1])
 
 # ---------------------------------------------------------------- 4. swap
 st.divider()
-st.subheader("4. Swap the face")
-agreed = st.checkbox("Everyone whose face I'm using has agreed to this, and I'll make clear it's an AI face swap "
+st.subheader("4. Swap")
+MODES = {
+    "main": "Whole person: the main person in the clip",
+    "described": "Whole person: I'll say who to replace",
+    "face": "Face only",
+}
+mode = st.radio("What to swap", list(MODES), format_func=MODES.get, key="mode")
+who, resolution, problem = "", "720", None
+lo, hi = video.DESCRIBED_SECONDS
+if mode == "main":
+    st.caption("Replaces the most prominent person with the person from your photo. They keep the same "
+               "movements, expressions and mouth movements, and the original sound stays. Works best when "
+               "one person is clearly the main subject of the clip.")
+    resolution = st.radio("Quality", ["720", "480"], horizontal=True,
+                          format_func=lambda r: {"720": "Sharper (720p)", "480": "Cheaper and faster (480p)"}[r])
+    cost = S.clip_len * video.COST_PER_SECOND[resolution]
+elif mode == "described":
+    st.caption(f"Use this when there are several people in the clip. Describe the one to replace. "
+               f"The clip must be {lo} to {hi} seconds long.")
+    who = st.text_input("Who should be replaced?", placeholder="e.g. the man driving the car")
+    cost = S.clip_len * video.COST_PER_SECOND["described"]
+    if S.clip and not lo <= S.clip_len <= hi:
+        problem = f"For this option, cut a clip between {lo} and {hi} seconds (yours is {S.clip_len:.0f})."
+    elif not who.strip():
+        problem = "Describe who to replace."
+else:
+    st.caption("Keeps the actor's body, hair and clothes and replaces only the face. One face in the clip is "
+               "replaced, usually the most prominent one.")
+    cost = 0.12
+if S.clip:
+    st.caption(f"Estimated cost on Replicate: about US${cost:.2f} for this clip.")
+
+agreed = st.checkbox("Everyone whose picture I'm using has agreed to this, and I'll make clear it's AI-generated "
                      "if I show it to anyone.")
 left = quota_left("swaps")
-ready = bool(S.clip and face_jpeg and agreed and left)
-if st.button("Swap the face", type="primary", disabled=not ready, use_container_width=True):
+ready = bool(S.clip and person_jpeg and agreed and left and not problem)
+if st.button("Swap", type="primary", disabled=not ready, use_container_width=True):
     try:
         if not os.getenv("REPLICATE_API_TOKEN"):
             raise RuntimeError("add REPLICATE_API_TOKEN in .env or Streamlit secrets.")
-        with st.spinner("Swapping the face frame by frame. This usually takes one to three minutes..."):
-            out = video.swap_face(S.clip, face_jpeg)
+        with st.spinner("Swapping. This usually takes a few minutes, longer for longer clips..."):
+            if mode == "main":
+                out = video.replace_person(S.clip, person_jpeg, resolution)
+            elif mode == "described":
+                out = video.replace_described_person(S.clip, person_jpeg, who)
+            else:
+                out = video.swap_face(S.clip, face_jpeg)
         usage.record(S.user, "swaps")
-        S.results.insert(0, out)
+        S.results.insert(0, {"video": out, "label": MODES[mode]})
         st.rerun()
     except Exception as e:  # surface API errors in the UI
         st.error(f"That didn't work: {str(e)[:300]}")
 if not S.clip:
     st.caption("Cut a clip first (step 2).")
-elif not face_jpeg:
-    st.caption("Upload a photo with a clear face (step 3).")
+elif not person_jpeg:
+    st.caption("Upload a photo of the person (step 3).")
+elif problem:
+    st.caption(problem)
 elif not left:
-    st.caption(f"You've used all {usage.limits['swaps']} face swaps.")
+    st.caption(f"You've used all {usage.limits['swaps']} swaps.")
 else:
-    st.caption(f"{left} face swaps left. Only one face in the clip is replaced, usually the most prominent one.")
+    st.caption(f"{left} swaps left.")
 
 for n, result in enumerate(S.results):
     before, after = st.columns(2)
     before.video(S.clip)
     before.caption("Before")
-    after.video(result)
-    after.caption("After (AI face swap)")
-    after.download_button("Download", result, mime="video/mp4", key=f"dl_{n}_{len(S.results)}",
+    after.video(result["video"])
+    after.caption(f"After (AI-generated). {result['label']}")
+    after.download_button("Download", result["video"], mime="video/mp4", key=f"dl_{n}_{len(S.results)}",
                           file_name=f"face-clip-{datetime.now():%Y%m%d-%H%M%S}.mp4")
