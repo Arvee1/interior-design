@@ -108,6 +108,22 @@ def _read_video(out) -> bytes:
         return resp.read()
 
 
+def restore_audio(swapped: bytes, clip: bytes) -> bytes:
+    """Put the original clip's sound onto the swapped video (face-swap models often drop it).
+    Returns the swapped video unchanged if the clip has no sound or the merge fails."""
+    with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
+        video_in, audio_in, out = Path(tmp) / "swapped.mp4", Path(tmp) / "clip.mp4", Path(tmp) / "out.mp4"
+        video_in.write_bytes(swapped)
+        audio_in.write_bytes(clip)
+        if "Audio:" not in _run(["-i", str(audio_in)]).stderr:
+            return swapped
+        result = _run(["-y", "-i", str(video_in), "-i", str(audio_in), "-map", "0:v:0", "-map", "1:a:0",
+                       "-c:v", "copy", "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(out)])
+        if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+            return swapped
+        return out.read_bytes()
+
+
 def swap_face(clip: bytes, face_jpeg: bytes, model: str | None = None) -> bytes:
     """Swap the face from a photo into a video clip on Replicate; returns MP4 bytes.
     With no model chosen (argument or FACECLIPS_MODEL), tries each default model until one works."""
@@ -123,7 +139,7 @@ def swap_face(clip: bytes, face_jpeg: bytes, model: str | None = None) -> bytes:
             ref = name if ":" in name else f"{name}:{replicate.models.get(name).latest_version.id}"
             out = replicate.run(ref, input={spec["video"]: _named(clip, "clip.mp4"),
                                             spec["face"]: _named(face_jpeg, "face.jpg"), **spec["extra"]})
-            return _read_video(out)
+            return restore_audio(_read_video(out), clip)
         except Exception as e:  # a model that's broken or offline shouldn't sink the swap; try the next
             error = f"{name}: {e}"
     raise RuntimeError(error or "no face-swap model is available.")
