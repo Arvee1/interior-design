@@ -18,12 +18,13 @@ VIDEO_HOSTS = ("youtube.com", "youtu.be")
 
 # Replicate video face-swap models (all based on roop) and what each calls its inputs.
 # One face photo in, one video in; the main face in the video is swapped.
-DEFAULT_SWAP_MODEL = "xrunda/hello"
 SWAP_MODELS = {
-    "xrunda/hello": {"video": "source", "face": "target"},
-    "okaris/roop": {"video": "target", "face": "source"},
-    "arabyai-replicate/roop_face_swap": {"video": "target_video", "face": "swap_image"},
+    "okaris/roop": {"video": "target", "face": "source", "extra": {"keep_fps": True, "keep_frames": False}},
+    "arabyai-replicate/roop_face_swap": {"video": "target_video", "face": "swap_image", "extra": {}},
+    # Not updated since 2023; its runs now fail with "Got error trying to upload output files".
+    "xrunda/hello": {"video": "source", "face": "target", "extra": {}},
 }
+DEFAULT_SWAP_MODELS = ["okaris/roop", "arabyai-replicate/roop_face_swap"]  # tried in order
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
@@ -71,7 +72,7 @@ def fetch_from_link(url: str, workdir: str | Path) -> Path:
         if not info or not info.get("requested_downloads"):
             raise ValueError(too_long(info or {}) or "That video couldn't be downloaded.")
         return Path(info["requested_downloads"][0]["filepath"])
-    if any(sign in (error or "") for sign in ("403", "Sign in to confirm", "not a bot")):
+    if any(sign in (error or "") for sign in ("403", "Sign in to confirm", "not a bot", "file is empty")):
         raise ValueError("YouTube blocked this download. It often refuses requests from hosted sites. "
                          "Run the app on your own computer, or download the video there and use "
                          "\"Upload a video file\" instead.")
@@ -95,24 +96,37 @@ def _named(data: bytes, name: str) -> io.BytesIO:
     return f
 
 
+def _read_video(out) -> bytes:
+    """Bytes of the MP4 in a Replicate output (a file, a URL, or a list of either)."""
+    items = out if isinstance(out, (list, tuple)) else [out]
+    if not items:
+        raise RuntimeError("the model returned no video.")
+    item = next((i for i in items if str(getattr(i, "url", i)).lower().split("?")[0].endswith(".mp4")), items[0])
+    if hasattr(item, "read"):
+        return item.read()
+    with urllib.request.urlopen(str(item)) as resp:  # older clients return a URL
+        return resp.read()
+
+
 def swap_face(clip: bytes, face_jpeg: bytes, model: str | None = None) -> bytes:
-    """Swap the face from a photo into a video clip on Replicate; returns MP4 bytes."""
+    """Swap the face from a photo into a video clip on Replicate; returns MP4 bytes.
+    With no model chosen (argument or FACECLIPS_MODEL), tries each default model until one works."""
     import replicate
 
-    model = model or os.getenv("FACECLIPS_MODEL", DEFAULT_SWAP_MODEL)
-    names = SWAP_MODELS.get(model.split(":")[0])
-    if not names:
-        raise ValueError(f"Unknown face-swap model '{model}'. Use one of: {', '.join(SWAP_MODELS)}.")
-    if ":" not in model:  # community models must be run by version; use the latest
-        model = f"{model}:{replicate.models.get(model).latest_version.id}"
-    out = replicate.run(model, input={names["video"]: _named(clip, "clip.mp4"),
-                                      names["face"]: _named(face_jpeg, "face.jpg")})
-    if isinstance(out, list):
-        out = out[0]
-    if hasattr(out, "read"):
-        return out.read()
-    with urllib.request.urlopen(str(out)) as resp:  # older clients return a URL
-        return resp.read()
+    chosen = model or os.getenv("FACECLIPS_MODEL")
+    error = None
+    for name in ([chosen] if chosen else DEFAULT_SWAP_MODELS):
+        spec = SWAP_MODELS.get(name.split(":")[0])
+        if not spec:
+            raise ValueError(f"Unknown face-swap model '{name}'. Use one of: {', '.join(SWAP_MODELS)}.")
+        try:
+            ref = name if ":" in name else f"{name}:{replicate.models.get(name).latest_version.id}"
+            out = replicate.run(ref, input={spec["video"]: _named(clip, "clip.mp4"),
+                                            spec["face"]: _named(face_jpeg, "face.jpg"), **spec["extra"]})
+            return _read_video(out)
+        except Exception as e:  # a model that's broken or offline shouldn't sink the swap; try the next
+            error = f"{name}: {e}"
+    raise RuntimeError(error or "no face-swap model is available.")
 
 
 def new_workdir() -> str:

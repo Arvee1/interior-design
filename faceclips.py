@@ -147,8 +147,8 @@ if not S.source:
     link_tab, file_tab = st.tabs(["Paste a YouTube link", "Upload a video file"])
     with link_tab:
         url = st.text_input("YouTube link", placeholder="https://www.youtube.com/watch?v=...", key=f"url_{S.n}")
-        st.caption("Links can fail on the hosted site, because YouTube often blocks cloud servers. "
-                   "If that happens, upload the video file instead.")
+        st.caption("Links only work when you run this app on your own computer. YouTube blocks hosted sites "
+                   "like Streamlit Cloud, so there, use \"Upload a video file\" instead.")
         if st.button("Get video", type="primary", disabled=not url.strip()):
             try:
                 with st.spinner("Fetching the video..."):

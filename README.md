@@ -100,7 +100,7 @@ The after picture is an AI impression of the concept, so it won't match every li
 1. **Load a video:** paste a YouTube link (fetched with `yt-dlp`) or upload an MP4/MOV/WebM file.
 2. **Pick the part to use:** choose a start time and length, up to 30 seconds. The clip is cut and scaled to 720p with a bundled `ffmpeg` (`imageio-ffmpeg`), so no system install is needed.
 3. **Upload a face photo:** if the photo has several faces, you choose which one.
-4. **Swap:** the clip and face go to a roop-based face-swap model on Replicate. The default is `xrunda/hello`; set `FACECLIPS_MODEL` to `okaris/roop` or `arabyai-replicate/roop_face_swap` to try another.
+4. **Swap:** the clip and face go to a roop-based face-swap model on Replicate. By default it tries `okaris/roop`, then `arabyai-replicate/roop_face_swap` if that fails; set `FACECLIPS_MODEL` to force one. (`xrunda/hello` hasn't been updated since 2023 and now fails when returning its output.)
 
 - **Limits:** 5 video loads and 5 face swaps per user, in `.faceclips_usage.json`, shown in the sidebar. Same `ALLOWED_USERS` sign-in as the other apps.
 - **One face per swap:** these models replace one face in the clip (usually the most prominent), not a chosen character.
