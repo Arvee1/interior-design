@@ -6,4 +6,4 @@ secondaryBackgroundColor = "#E2E7E0"
 textColor = "#1E2422"
 
 [server]
-maxUploadSize = 20
+maxUploadSize = 50

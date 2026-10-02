@@ -30,7 +30,7 @@ restyle/
   prompts.py           System prompt and prompt builders
   tools.py             get_style_guide and check_budget tools (edit STYLE_GUIDES freely)
   render.py            Photo pins, palette swatches, CSV export
-.streamlit/config.toml Theme and 20 MB upload limit
+.streamlit/config.toml Theme and 50 MB upload limit
 ```
 
 ## How it works

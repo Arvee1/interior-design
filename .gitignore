@@ -6,3 +6,4 @@ __pycache__/
 .usage.json
 .historythemes_usage.json
 .faceclips_usage.json
+*.mp4
