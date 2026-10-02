@@ -172,7 +172,9 @@ def for_described_model(clip: bytes) -> bytes:
     with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
         src, out = Path(tmp) / "in.mp4", Path(tmp) / "out.mp4"
         src.write_bytes(clip)
-        result = _run(["-y", "-i", str(src), "-vf", "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'",
+        # Stop just short of the model's limit: a "10 second" clip usually runs a few frames over.
+        result = _run(["-y", "-i", str(src), "-t", f"{DESCRIBED_SECONDS[1] - 0.2:.1f}",
+                       "-vf", "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'",
                        "-c:v", "libx264", "-preset", "medium", "-crf", "24", "-maxrate", "1500k", "-bufsize", "3000k",
                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(out)])
         if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
