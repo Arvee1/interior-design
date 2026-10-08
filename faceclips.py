@@ -190,14 +190,19 @@ with clip_col:
 
 # ---------------------------------------------------------------- 3. the person
 def person_crops(photo, face) -> tuple:
-    """(whole-person crop, face crop) for one detected face: the body crop takes the area around
-    and below the face, so one person can be lifted out of a group photo."""
+    """(whole-person crop, face crop, head crop) for one detected face: the body crop takes the area
+    around and below the face, so one person can be lifted out of a group photo; the head crop is
+    generous so the hair and whole head shape are included."""
     x, y, w, h = (int(v) for v in face[:4])
     body = photo.crop((max(0, x - int(w * 1.7)), max(0, y - int(h * 0.8)),
                        min(photo.width, x + w + int(w * 1.7)), min(photo.height, y + h + int(h * 7))))
     pad = int(max(w, h) * 0.6)
-    head = photo.crop((max(0, x - pad), max(0, y - pad), min(photo.width, x + w + pad), min(photo.height, y + h + pad)))
-    return body, head
+    face_only = photo.crop((max(0, x - pad), max(0, y - pad), min(photo.width, x + w + pad),
+                            min(photo.height, y + h + pad)))
+    hp = int(max(w, h) * 0.9)
+    head = photo.crop((max(0, x - hp), max(0, y - int(hp * 1.2)), min(photo.width, x + w + hp),
+                       min(photo.height, y + h + int(hp * 1.3))))
+    return body, face_only, head
 
 
 def as_jpeg(img, min_side: int = 0) -> bytes:
@@ -209,7 +214,7 @@ def as_jpeg(img, min_side: int = 0) -> bytes:
     return buf.getvalue()
 
 
-person_jpeg = face_jpeg = None
+person_jpeg = face_jpeg = head_jpeg = None
 with face_col:
     st.subheader("3. Upload a photo of the person to put in")
     photo = st.file_uploader("Photo", type=["jpg", "jpeg", "png", "webp"], key=f"face_{S.n}",
@@ -231,13 +236,14 @@ with face_col:
             pick = 0
             if len(crops) > 1:
                 st.caption(f"Found {len(crops)} people. Choose who to put in the clip.")
-                for col, (i, (body, _)) in zip(st.columns(len(crops)), enumerate(crops)):
+                for col, (i, (body, _, _)) in zip(st.columns(len(crops)), enumerate(crops)):
                     col.image(body, caption=f"Person {i + 1}")
                 pick = st.radio("Person", range(len(crops)), format_func=lambda i: f"Person {i + 1}",
                                 horizontal=True, label_visibility="collapsed")
             else:
                 st.image(crops[0][0], width=220)
             person_jpeg, face_jpeg = as_jpeg(crops[pick][0], min_side=320), as_jpeg(crops[pick][1])
+            head_jpeg = as_jpeg(crops[pick][2], min_side=320)
 
 # ---------------------------------------------------------------- 4. swap
 st.divider()
@@ -245,14 +251,22 @@ st.subheader("4. Swap")
 MODES = {
     "main": "Whole person: the main person in the clip",
     "described": "Whole person: I'll say who to replace",
+    "head": "Head only (face and hair)",
     "face": "Face only",
 }
 mode = st.radio("What to swap", list(MODES), format_func=MODES.get, key="mode")
 who, resolution, problem, box = "", "720", None, None
 lo, hi = video.DESCRIBED_SECONDS
+if mode == "head":
+    st.caption(f"Replaces the head (face, hair and head shape) with the one from your photo. The actor's body, "
+               f"clothes and movements stay, and the original sound stays. Uses Kling 3.0. The clip must be "
+               f"{lo} to {hi} seconds long.")
+    if S.clip and not lo <= S.clip_len <= hi:
+        problem = f"For this option, cut a clip between {lo} and {hi} seconds (yours is {S.clip_len:.0f})."
 if mode == "main":
     st.caption("Replaces a person with the person from your photo. They keep the same movements, expressions "
                "and mouth movements, and the original sound stays.")
+if mode in ("main", "head"):
     if S.clip:
         if S.clip_people is None:
             with st.spinner("Looking for people in the clip..."):
@@ -279,9 +293,12 @@ if mode == "main":
         elif not found_people:
             st.caption("No faces found at the start of the clip, so the whole picture is sent to the model. "
                        "Start the clip where the person's face is visible to choose who to replace.")
+if mode == "main":
     resolution = st.radio("Quality", ["720", "480"], horizontal=True,
                           format_func=lambda r: {"720": "Sharper (720p)", "480": "Cheaper and faster (480p)"}[r])
     cost = S.clip_len * video.COST_PER_SECOND[resolution]
+elif mode == "head":
+    cost = S.clip_len * video.COST_PER_SECOND["described"]
 elif mode == "described":
     st.caption(f"Use this when there are several people in the clip. Describe the one to replace. "
                f"The clip must be {lo} to {hi} seconds long.")
@@ -311,6 +328,8 @@ if st.button("Swap", type="primary", disabled=not ready, use_container_width=Tru
                 out = video.replace_person(S.clip, person_jpeg, resolution, box)
             elif mode == "described":
                 out = video.replace_described_person(S.clip, person_jpeg, who)
+            elif mode == "head":
+                out = video.replace_head(S.clip, video.cut_out_person(head_jpeg), box)
             else:
                 out = video.swap_face(S.clip, face_jpeg)
         usage.record(S.user, "swaps")

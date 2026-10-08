@@ -227,22 +227,52 @@ def described_prompt(who: str) -> str:
     )
 
 
-def replace_described_person(clip: bytes, person_jpeg: bytes, who: str) -> bytes:
-    """Replace the person described by `who` (e.g. 'the man driving') with the person in the photo
-    (Kling 3.0 Omni video edit). The clip must be 3-10 seconds long."""
+def _kling_edit(clip: bytes, image_jpeg: bytes, prompt: str) -> bytes:
+    """Edit a 3-10 second clip with Kling 3.0 Omni, using one reference photo; returns MP4 bytes."""
     import replicate
 
     # This model checks that its inputs end in .mp4/.jpg. Uploaded files get an address with no
     # extension and are rejected, so embed them in the request (base64), which carries the file type.
     out = replicate.run(os.getenv("FACECLIPS_DESCRIBED_MODEL", DESCRIBED_MODEL), file_encoding_strategy="base64", input={
-        "prompt": described_prompt(who),
+        "prompt": prompt,
         "reference_video": _named(for_described_model(clip), "clip.mp4"),
         "video_reference_type": "base",
-        "reference_images": [_named(person_jpeg, "person.jpg")],
+        "reference_images": [_named(image_jpeg, "person.jpg")],
         "keep_original_sound": True,
         "mode": "standard",
     })
-    return restore_audio(_read_video(out), clip)
+    return _read_video(out)
+
+
+def replace_described_person(clip: bytes, person_jpeg: bytes, who: str) -> bytes:
+    """Replace the person described by `who` (e.g. 'the man driving') with the person in the photo
+    (Kling 3.0 Omni video edit). The clip must be 3-10 seconds long."""
+    return restore_audio(_kling_edit(clip, person_jpeg, described_prompt(who)), clip)
+
+
+HEAD_PROMPT = (
+    "In <<<video_1>>>, replace only the person's head with the head of the person shown in <<<image_1>>>: "
+    "their face, facial features, skin tone, hair, hairline and head shape, so they are clearly recognisable "
+    "as the person in <<<image_1>>>. Keep everything below the neck exactly as in <<<video_1>>>: the same "
+    "body, clothes, hands and movements. The new head moves exactly like the original one: the same head "
+    "turns, facial expressions, eye movements and mouth movements at the same moments, so they appear to say "
+    "the same words. Do not add hats, headphones, glasses or accessories. The background, camera movement, "
+    "framing and lighting stay exactly as in <<<video_1>>>."
+)
+
+
+def replace_head(clip: bytes, head_jpeg: bytes, box: tuple[int, int, int, int] | None = None) -> bytes:
+    """Replace a person's head (face, hair and head shape) with the one in the photo, keeping their body,
+    clothes and movements (Kling 3.0 Omni video edit; clip must be 3-10 seconds). With `box`, only that
+    person's part of the frame is sent and pasted back, so other people are left alone and the head
+    takes up more of the picture the model works on."""
+    from .people import crop_clip, paste_back
+
+    piece = crop_clip(clip, box) if box else clip
+    result = _kling_edit(piece, head_jpeg, HEAD_PROMPT)
+    if box:
+        return paste_back(clip, result, box)
+    return restore_audio(result, clip)
 
 
 def new_workdir() -> str:
