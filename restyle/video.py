@@ -216,8 +216,18 @@ def for_described_model(clip: bytes) -> bytes:
         return out.read_bytes()
 
 
-def described_prompt(who: str) -> str:
+def described_prompt(who: str, animal: bool = False) -> str:
     who = " ".join(who.split()).strip(" .")[:200]
+    if animal:
+        return (
+            f"Replace {who} in <<<video_1>>> with the animal shown in <<<image_1>>>, as a character with that "
+            "animal's head, face, ears, fur, colours and markings, clearly recognisable as the same animal. "
+            "It stands or sits upright in the same place and pose as the original person and wears the same "
+            "clothes. It does exactly what the original person does: the same movements, gestures, head turns, "
+            "expressions and mouth movements at the same moments, so it appears to say the same words. "
+            "Change only that one person. Everyone else, the background, the camera movement, the framing "
+            "and the lighting stay exactly as in <<<video_1>>>."
+        )
     return (
         f"Replace {who} in <<<video_1>>> with the person shown in <<<image_1>>>: their face, hair, body and "
         "overall look. The new person does exactly what the original person does: the same movements, "
@@ -244,10 +254,10 @@ def _kling_edit(clip: bytes, image_jpeg: bytes, prompt: str) -> bytes:
     return _read_video(out)
 
 
-def replace_described_person(clip: bytes, person_jpeg: bytes, who: str) -> bytes:
-    """Replace the person described by `who` (e.g. 'the man driving') with the person in the photo
-    (Kling 3.0 Omni video edit). The clip must be 3-10 seconds long."""
-    return restore_audio(_kling_edit(clip, person_jpeg, described_prompt(who)), clip)
+def replace_described_person(clip: bytes, person_jpeg: bytes, who: str, animal: bool = False) -> bytes:
+    """Replace the person described by `who` (e.g. 'the man driving') with the person, or animal,
+    in the photo (Kling 3.0 Omni video edit). The clip must be 3-10 seconds long."""
+    return restore_audio(_kling_edit(clip, person_jpeg, described_prompt(who, animal)), clip)
 
 
 HEAD_PROMPT = (
@@ -261,7 +271,19 @@ HEAD_PROMPT = (
 )
 
 
-def replace_head(clip: bytes, head_jpeg: bytes, box: tuple[int, int, int, int] | None = None) -> bytes:
+ANIMAL_HEAD_PROMPT = (
+    "In <<<video_1>>>, replace only the person's head with the head of the animal shown in <<<image_1>>>: "
+    "its face, ears, fur, colours and markings, sized to sit naturally on the person's neck and clearly "
+    "recognisable as the same animal. Keep everything below the neck exactly as in <<<video_1>>>: the same "
+    "human body, clothes, hands and movements. The animal head moves exactly like the original head: the "
+    "same head turns, expressions, eye movements and mouth movements at the same moments, so it appears to "
+    "say the same words. Do not add hats, headphones, glasses or accessories. The background, camera "
+    "movement, framing and lighting stay exactly as in <<<video_1>>>."
+)
+
+
+def replace_head(clip: bytes, head_jpeg: bytes, box: tuple[int, int, int, int] | None = None,
+                 animal: bool = False) -> bytes:
     """Replace a person's head (face, hair and head shape) with the one in the photo, keeping their body,
     clothes and movements (Kling 3.0 Omni video edit; clip must be 3-10 seconds). With `box`, only that
     person's part of the frame is sent and pasted back, so other people are left alone and the head
@@ -269,7 +291,7 @@ def replace_head(clip: bytes, head_jpeg: bytes, box: tuple[int, int, int, int] |
     from .people import crop_clip, paste_back
 
     piece = crop_clip(clip, box) if box else clip
-    result = _kling_edit(piece, head_jpeg, HEAD_PROMPT)
+    result = _kling_edit(piece, head_jpeg, ANIMAL_HEAD_PROMPT if animal else HEAD_PROMPT)
     if box:
         return paste_back(clip, result, box)
     return restore_audio(result, clip)

@@ -112,7 +112,7 @@ with st.sidebar:
     st.header("How it works")
     st.markdown("1. Load a video: paste a YouTube link or upload a file.\n"
                 f"2. Pick the part you want (up to {video.MAX_CLIP_SECONDS} seconds).\n"
-                "3. Upload a photo and pick the person to put in.\n"
+                "3. Upload a photo of the person or animal to put in.\n"
                 "4. Swap the whole person (they keep doing and saying the same thing) or just the face.")
     st.divider()
     if not os.getenv("REPLICATE_API_TOKEN"):
@@ -215,11 +215,12 @@ def as_jpeg(img, min_side: int = 0) -> bytes:
 
 
 person_jpeg = face_jpeg = head_jpeg = None
+animal = False
 with face_col:
-    st.subheader("3. Upload a photo of the person to put in")
+    st.subheader("3. Upload a photo of who to put in")
     photo = st.file_uploader("Photo", type=["jpg", "jpeg", "png", "webp"], key=f"face_{S.n}",
-                             help="A clear, well-lit photo. Showing the upper body or whole body works best "
-                                  "for swapping the whole person.")
+                             help="A person or an animal. A clear, well-lit photo showing the head and body "
+                                  "works best.")
     if photo and (photo.name, photo.size) != S.face_sig:
         try:
             _, S.face = prepare_image(photo.getvalue())
@@ -228,9 +229,18 @@ with face_col:
             st.error("That photo couldn't be opened. Try a JPEG or PNG.")
     if S.face is not None:
         found = sorted(detect_faces(cv2.cvtColor(np.array(S.face), cv2.COLOR_RGB2BGR)), key=lambda f: f[0])[:5]
-        if not found:
+        subject = st.radio("What's in the photo?", ["person", "animal"], index=0 if found else 1, horizontal=True,
+                           format_func={"person": "A person", "animal": "An animal"}.get,
+                           key=f"subject_{S.n}_{S.face_sig}")
+        animal = subject == "animal"
+        if animal:
             st.image(S.face, width=220)
-            st.warning("No person found in that photo. Try a clearer photo where the face is visible.")
+            st.caption("The whole photo is used. One animal on its own, with its head and body in view, works best.")
+            person_jpeg = head_jpeg = as_jpeg(S.face, min_side=320)
+        elif not found:
+            st.image(S.face, width=220)
+            st.warning("No person found in that photo. Try a clearer photo where the face is visible, "
+                       "or choose \"An animal\" above.")
         else:
             crops = [person_crops(S.face, f) for f in found]  # left to right
             pick = 0
@@ -266,6 +276,12 @@ if mode == "head":
 if mode == "main":
     st.caption("Replaces a person with the person from your photo. They keep the same movements, expressions "
                "and mouth movements, and the original sound stays.")
+    if animal:
+        st.info("This option is built for swapping people. With an animal it may give it a human-shaped body or "
+                "an odd face. If that happens, try \"I'll say who to replace\", which is told to keep it "
+                "an animal.")
+if mode == "face" and animal:
+    problem = "Face only needs a person's face. For an animal, use a whole-person option or Head only."
 if mode in ("main", "head"):
     if S.clip:
         if S.clip_people is None:
@@ -327,9 +343,9 @@ if st.button("Swap", type="primary", disabled=not ready, use_container_width=Tru
             if mode == "main":
                 out = video.replace_person(S.clip, person_jpeg, resolution, box)
             elif mode == "described":
-                out = video.replace_described_person(S.clip, person_jpeg, who)
+                out = video.replace_described_person(S.clip, person_jpeg, who, animal)
             elif mode == "head":
-                out = video.replace_head(S.clip, video.cut_out_person(head_jpeg), box)
+                out = video.replace_head(S.clip, video.cut_out_person(head_jpeg), box, animal)
             else:
                 out = video.swap_face(S.clip, face_jpeg)
         usage.record(S.user, "swaps")
@@ -345,7 +361,7 @@ if st.button("Swap", type="primary", disabled=not ready, use_container_width=Tru
 if not S.clip:
     st.caption("Cut a clip first (step 2).")
 elif not person_jpeg:
-    st.caption("Upload a photo of the person (step 3).")
+    st.caption("Upload a photo of the person or animal (step 3).")
 elif problem:
     st.caption(problem)
 elif not left:
