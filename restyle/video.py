@@ -83,7 +83,7 @@ def trim(source: str | Path, start: float, seconds: float, workdir: str | Path) 
     """Cut [start, start + seconds] out of a video and return it as a web-friendly MP4 (max 720p)."""
     out = Path(workdir) / "clip.mp4"
     result = _run(["-y", "-ss", f"{max(0.0, start):.2f}", "-t", f"{min(seconds, MAX_CLIP_SECONDS):.2f}",
-                   "-i", str(source), "-vf", "scale=-2:'min(720,ih)'", "-c:v", "libx264", "-preset", "veryfast",
+                   "-i", str(source), "-vf", "scale=-2:'min(720,ih)',setsar=1", "-c:v", "libx264", "-preset", "veryfast",
                    "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", str(out)])
     if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
         raise RuntimeError("That video couldn't be trimmed. Try a different file or link.")
@@ -208,7 +208,7 @@ def for_described_model(clip: bytes) -> bytes:
         src.write_bytes(clip)
         # Stop just short of the model's limit: a "10 second" clip usually runs a few frames over.
         result = _run(["-y", "-i", str(src), "-t", f"{DESCRIBED_SECONDS[1] - 0.2:.1f}",
-                       "-vf", "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'",
+                       "-vf", "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',setsar=1",  # models reject non-square pixels
                        "-c:v", "libx264", "-preset", "medium", "-crf", "24", "-maxrate", "1500k", "-bufsize", "3000k",
                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(out)])
         if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:

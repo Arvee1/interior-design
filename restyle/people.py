@@ -111,6 +111,7 @@ def crop_clip(clip: bytes, box: tuple[int, int, int, int]) -> bytes:
     x, y, w, h = box
     grow = 720 / min(w, h)
     scale = f",scale={_even(w * grow)}:{_even(h * grow)}:flags=lanczos" if grow > 1.1 else ""
+    scale += ",setsar=1"  # rounding the size can leave pixels marked slightly non-square, which models reject
     with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
         src, out = Path(tmp) / "in.mp4", Path(tmp) / "out.mp4"
         src.write_bytes(clip)
