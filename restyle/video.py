@@ -1,6 +1,7 @@
 """Video helpers for Face Clips: fetch a clip from a link, trim it, and swap a face into it on Replicate."""
 
 import io
+import math
 import os
 import re
 import subprocess
@@ -13,7 +14,8 @@ import imageio_ffmpeg
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()  # bundled binary, so no system ffmpeg is needed
 MAX_SOURCE_SECONDS = 600   # refuse to fetch anything longer than 10 minutes
-MAX_CLIP_SECONDS = 30      # longest piece sent for face swapping (cost and time grow with length)
+MIN_CLIP_SECONDS = 3       # shortest clip the swap models accept
+MAX_CLIP_SECONDS = 120     # longest clip sent for swapping (cost and time grow with length)
 VIDEO_HOSTS = ("youtube.com", "youtu.be")
 
 # Replicate video face-swap models (all based on roop) and what each calls its inputs.
@@ -108,14 +110,16 @@ def _read_video(out) -> bytes:
         return resp.read()
 
 
-def restore_audio(swapped: bytes, clip: bytes) -> bytes:
+def restore_audio(swapped: bytes, clip: bytes, force: bool = False) -> bytes:
     """Put the original clip's sound onto the swapped video (face-swap models often drop it).
-    Returns the swapped video unchanged if the clip has no sound or the merge fails."""
+    Returns the swapped video unchanged if the clip has no sound or the merge fails. With `force`,
+    the original sound replaces whatever the swapped video has."""
     with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
         video_in, audio_in, out = Path(tmp) / "swapped.mp4", Path(tmp) / "clip.mp4", Path(tmp) / "out.mp4"
         video_in.write_bytes(swapped)
         audio_in.write_bytes(clip)
-        if "Audio:" in _run(["-i", str(video_in)]).stderr or "Audio:" not in _run(["-i", str(audio_in)]).stderr:
+        has_sound = "Audio:" in _run(["-i", str(video_in)]).stderr
+        if (has_sound and not force) or "Audio:" not in _run(["-i", str(audio_in)]).stderr:
             return swapped  # the result already has sound, or there is none to add
         result = _run(["-y", "-i", str(video_in), "-i", str(audio_in), "-map", "0:v:0", "-map", "1:a:0",
                        "-c:v", "copy", "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(out)])
@@ -150,6 +154,63 @@ PERSON_MODEL = "wan-video/wan-2.2-animate-replace"   # replaces the main person;
 DESCRIBED_MODEL = "kwaivgi/kling-v3-omni-video"      # prompt-driven edit: you say who to replace
 DESCRIBED_SECONDS = (3, 10)                          # clip length the prompt-driven model accepts
 COST_PER_SECOND = {"480": 0.02, "720": 0.05, "described": 0.168}  # USD, from Replicate's pricing pages
+FACE_COST_PER_SECOND = 0.008                         # rough: face-only models bill by run time, not length
+
+
+def estimate_costs(seconds: float) -> dict[str, float]:
+    """Rough cost in USD of each swap option for a clip of this length."""
+    return {
+        "main720": seconds * COST_PER_SECOND["720"],
+        "main480": seconds * COST_PER_SECOND["480"],
+        "described": seconds * COST_PER_SECOND["described"],
+        "head": seconds * COST_PER_SECOND["described"],
+        "face": max(0.06, seconds * FACE_COST_PER_SECOND),
+    }
+
+
+def parts_needed(seconds: float) -> int:
+    """How many pieces the prompt-driven model needs for a clip this long (it takes 10 seconds at most)."""
+    if seconds <= DESCRIBED_SECONDS[1] + 0.05:
+        return 1
+    return math.ceil(seconds / (DESCRIBED_SECONDS[1] - 0.4))
+
+
+def split_clip(clip: bytes, parts: int) -> list[bytes]:
+    """Cut a clip into `parts` equal pieces."""
+    with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
+        src = Path(tmp) / "in.mp4"
+        src.write_bytes(clip)
+        each = duration(src) / parts
+        pieces = []
+        for i in range(parts):
+            out = Path(tmp) / f"part{i}.mp4"
+            result = _run(["-y", "-ss", f"{i * each:.3f}", "-t", f"{each:.3f}", "-i", str(src), "-vf", "setsar=1",
+                           "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+                           "-c:a", "aac", "-movflags", "+faststart", str(out)])
+            if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+                raise RuntimeError("That clip couldn't be split into parts.")
+            pieces.append(out.read_bytes())
+        return pieces
+
+
+def join_clips(pieces: list[bytes]) -> bytes:
+    """Join video pieces end to end (picture only), matching them to the first piece's size."""
+    with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
+        paths = []
+        for i, piece in enumerate(pieces):
+            paths.append(Path(tmp) / f"p{i}.mp4")
+            paths[-1].write_bytes(piece)
+        m = re.search(r"Video:.*? (\d{2,5})x(\d{2,5})", _run(["-i", str(paths[0])]).stderr)
+        w, h = (int(m.group(1)) // 2 * 2, int(m.group(2)) // 2 * 2) if m else (1280, 720)
+        inputs = [arg for p in paths for arg in ("-i", str(p))]
+        graph = "".join(f"[{i}:v]scale={w}:{h},setsar=1,fps=30,format=yuv420p[v{i}];" for i in range(len(paths)))
+        graph += "".join(f"[v{i}]" for i in range(len(paths))) + f"concat=n={len(paths)}:v=1:a=0[v]"
+        out = Path(tmp) / "out.mp4"
+        result = _run(["-y", *inputs, "-filter_complex", graph, "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast",
+                       "-crf", "19", "-movflags", "+faststart", str(out)])
+        if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+            raise RuntimeError("The swapped parts couldn't be joined.")
+        return out.read_bytes()
 
 
 CUTOUT_MODEL = "bria/remove-background"  # official model, about US$0.02 per photo
@@ -237,8 +298,29 @@ def described_prompt(who: str, animal: bool = False) -> str:
     )
 
 
+def clip_seconds(clip: bytes) -> float:
+    with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
+        path = Path(tmp) / "clip.mp4"
+        path.write_bytes(clip)
+        return duration(path)
+
+
 def _kling_edit(clip: bytes, image_jpeg: bytes, prompt: str) -> bytes:
-    """Edit a 3-10 second clip with Kling 3.0 Omni, using one reference photo; returns MP4 bytes."""
+    """Edit a clip with Kling 3.0 Omni, using one reference photo; returns MP4 bytes (picture, maybe
+    sound). The model takes 10 seconds at most, so longer clips are cut into equal parts, edited
+    (up to three at a time) and joined; the caller puts the original sound back."""
+    parts = parts_needed(clip_seconds(clip))
+    if parts == 1:
+        return _kling_edit_one(clip, image_jpeg, prompt)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        edited = list(pool.map(lambda piece: _kling_edit_one(piece, image_jpeg, prompt), split_clip(clip, parts)))
+    return join_clips(edited)
+
+
+def _kling_edit_one(clip: bytes, image_jpeg: bytes, prompt: str) -> bytes:
+    """Edit one 3-10 second clip with Kling 3.0 Omni."""
     import replicate
 
     # This model checks that its inputs end in .mp4/.jpg. Uploaded files get an address with no
@@ -257,7 +339,7 @@ def _kling_edit(clip: bytes, image_jpeg: bytes, prompt: str) -> bytes:
 def replace_described_person(clip: bytes, person_jpeg: bytes, who: str, animal: bool = False) -> bytes:
     """Replace the person described by `who` (e.g. 'the man driving') with the person, or animal,
     in the photo (Kling 3.0 Omni video edit). The clip must be 3-10 seconds long."""
-    return restore_audio(_kling_edit(clip, person_jpeg, described_prompt(who, animal)), clip)
+    return restore_audio(_kling_edit(clip, person_jpeg, described_prompt(who, animal)), clip, force=True)
 
 
 HEAD_PROMPT = (
@@ -294,7 +376,7 @@ def replace_head(clip: bytes, head_jpeg: bytes, box: tuple[int, int, int, int] |
     result = _kling_edit(piece, head_jpeg, ANIMAL_HEAD_PROMPT if animal else HEAD_PROMPT)
     if box:
         return paste_back(clip, result, box)
-    return restore_audio(result, clip)
+    return restore_audio(result, clip, force=True)
 
 
 def new_workdir() -> str:

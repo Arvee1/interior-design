@@ -111,7 +111,7 @@ def load_source(path: Path):
 with st.sidebar:
     st.header("How it works")
     st.markdown("1. Load a video: paste a YouTube link or upload a file.\n"
-                f"2. Pick the part you want (up to {video.MAX_CLIP_SECONDS} seconds).\n"
+                f"2. Pick the part you want ({video.MIN_CLIP_SECONDS} to {video.MAX_CLIP_SECONDS} seconds).\n"
                 "3. Upload a photo of the person or animal to put in.\n"
                 "4. Swap the whole person (they keep doing and saying the same thing) or just the face.")
     st.divider()
@@ -172,11 +172,28 @@ if not S.source:
 clip_col, face_col = st.columns(2, gap="large")
 with clip_col:
     st.subheader("2. Pick the part to use")
-    longest = min(float(video.MAX_CLIP_SECONDS), S.source_len)
     c1, c2 = st.columns(2)
     start = c1.number_input("Start (seconds)", 0.0, max(0.0, S.source_len - 1.0), 0.0, step=1.0)
-    length = c2.number_input("Length (seconds)", 1.0, max(1.0, longest), min(15.0, max(1.0, longest)), step=1.0)
-    st.caption(f"The video is {S.source_len:.0f} seconds long. Shorter clips are faster and cheaper to swap.")
+    longest = max(1.0, min(float(video.MAX_CLIP_SECONDS), S.source_len - start))
+    shortest = min(float(video.MIN_CLIP_SECONDS), longest)
+    length = c2.number_input("Length (seconds)", shortest, longest, min(10.0, longest), step=1.0,
+                             help=f"From {shortest:.0f} to {longest:.0f} seconds. Longer clips cost more and "
+                                  "take longer.")
+    st.caption(f"The video is {S.source_len:.0f} seconds long. You can use {shortest:.0f} to {longest:.0f} "
+               "seconds from this start point.")
+    est = video.estimate_costs(length)
+    parts = video.parts_needed(length)
+    st.markdown(
+        f"**Estimated cost for {length:.0f} seconds** (US$, charged by Replicate)\n\n"
+        "| Option | Cost |\n|---|---|\n"
+        f"| Whole person: main person | ${est['main720']:.2f} at 720p, ${est['main480']:.2f} at 480p |\n"
+        f"| Whole person: I'll say who | ${est['described']:.2f} |\n"
+        f"| Head only | ${est['head']:.2f} |\n"
+        f"| Face only | about ${est['face']:.2f} |"
+    )
+    if parts > 1:
+        st.caption(f"\"I'll say who\" and \"Head only\" take 10 seconds at a time, so this length is done in "
+                   f"{parts} parts and joined. The person can look slightly different from part to part.")
     if st.button("Cut this part", type="primary" if S.clip is None else "secondary"):
         try:
             with st.spinner("Cutting the clip..."):
@@ -268,11 +285,10 @@ mode = st.radio("What to swap", list(MODES), format_func=MODES.get, key="mode")
 who, resolution, problem, box = "", "720", None, None
 lo, hi = video.DESCRIBED_SECONDS
 if mode == "head":
-    st.caption(f"Replaces the head (face, hair and head shape) with the one from your photo. The actor's body, "
-               f"clothes and movements stay, and the original sound stays. Uses Kling 3.0. The clip must be "
-               f"{lo} to {hi} seconds long.")
-    if S.clip and not lo <= S.clip_len <= hi:
-        problem = f"For this option, cut a clip between {lo} and {hi} seconds (yours is {S.clip_len:.0f})."
+    st.caption("Replaces the head (face, hair and head shape) with the one from your photo. The actor's body, "
+               "clothes and movements stay, and the original sound stays. Uses Kling 3.0.")
+    if S.clip and S.clip_len < lo:
+        problem = f"For this option, cut a clip of at least {lo} seconds (yours is {S.clip_len:.0f})."
 if mode == "main":
     st.caption("Replaces a person with the person from your photo. They keep the same movements, expressions "
                "and mouth movements, and the original sound stays.")
@@ -316,30 +332,34 @@ if mode == "main":
 elif mode == "head":
     cost = S.clip_len * video.COST_PER_SECOND["described"]
 elif mode == "described":
-    st.caption(f"Use this when there are several people in the clip. Describe the one to replace. "
-               f"The clip must be {lo} to {hi} seconds long.")
+    st.caption("Use this when there are several people in the clip. Describe the one to replace.")
     who = st.text_input("Who should be replaced?", placeholder="e.g. the man driving the car")
     cost = S.clip_len * video.COST_PER_SECOND["described"]
-    if S.clip and not lo <= S.clip_len <= hi:
-        problem = f"For this option, cut a clip between {lo} and {hi} seconds (yours is {S.clip_len:.0f})."
+    if S.clip and S.clip_len < lo:
+        problem = f"For this option, cut a clip of at least {lo} seconds (yours is {S.clip_len:.0f})."
     elif not who.strip():
         problem = "Describe who to replace."
 else:
     st.caption("Keeps the actor's body, hair and clothes and replaces only the face. One face in the clip is "
                "replaced, usually the most prominent one.")
-    cost = 0.12
+    cost = video.estimate_costs(S.clip_len)["face"]
 if S.clip:
-    st.caption(f"Estimated cost on Replicate: about US${cost:.2f} for this clip.")
+    st.caption(f"Estimated cost on Replicate: about US${cost:.2f} for this {S.clip_len:.0f}-second clip.")
+    if mode in ("described", "head") and video.parts_needed(S.clip_len) > 1:
+        st.caption(f"Done in {video.parts_needed(S.clip_len)} parts of up to {hi} seconds and joined. The person "
+                   "can look slightly different from part to part.")
 
 agreed = st.checkbox("Everyone whose picture I'm using has agreed to this, and I'll make clear it's AI-generated "
                      "if I show it to anyone.")
 left = quota_left("swaps")
 ready = bool(S.clip and person_jpeg and agreed and left and not problem)
-if st.button("Swap", type="primary", disabled=not ready, use_container_width=True):
+swap_label = f"Swap (about US${cost:.2f})" if S.clip else "Swap"
+if st.button(swap_label, type="primary", disabled=not ready, use_container_width=True):
     try:
         if not os.getenv("REPLICATE_API_TOKEN"):
             raise RuntimeError("add REPLICATE_API_TOKEN in .env or Streamlit secrets.")
-        with st.spinner("Swapping. This usually takes a few minutes, longer for longer clips..."):
+        with st.spinner("Swapping. This takes a few minutes, and up to 20 or more for long clips. "
+                        "Keep this page open..."):
             if mode == "main":
                 out = video.replace_person(S.clip, person_jpeg, resolution, box)
             elif mode == "described":

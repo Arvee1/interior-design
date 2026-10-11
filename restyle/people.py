@@ -13,27 +13,31 @@ from PIL import Image, ImageDraw, ImageFilter
 from .faces import _detect
 from .video import _run, duration
 
-SAMPLE_EVERY = 0.4  # seconds between the frames used to follow each person
+SAMPLE_EVERY = 0.4   # seconds between the frames used to follow each person
+MAX_SAMPLES = 150    # for long clips, sample less often so the check stays quick
 
 
-def _frames(clip: bytes) -> list[np.ndarray]:
-    """Frames sampled through the clip (BGR), starting with the first."""
+def _frames(clip: bytes):
+    """Yield frames sampled through the clip (BGR), starting with the first. One frame is held in
+    memory at a time, so long clips don't use much."""
     with tempfile.TemporaryDirectory(prefix="faceclips_") as tmp:
         path = Path(tmp) / "clip.mp4"
         path.write_bytes(clip)
         cap = cv2.VideoCapture(str(path))
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        step = max(1, round(fps * SAMPLE_EVERY))
-        frames, n = [], 0
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if n % step == 0:
-                frames.append(frame)
-            n += 1
-        cap.release()
-        return frames
+        total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        step = max(1, round(fps * SAMPLE_EVERY), int(total // MAX_SAMPLES))
+        n = 0
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                if n % step == 0:
+                    yield frame
+                n += 1
+        finally:
+            cap.release()
 
 
 def _even(v: float) -> int:
@@ -46,16 +50,19 @@ def find_people(clip: bytes) -> tuple[Image.Image | None, list[dict]]:
     if they can't be separated from the others) and 'seen' (the share of the clip, 0 to 1, in which
     their face was found). People are ordered left to right."""
     frames = _frames(clip)
-    if not frames:
+    first_frame = next(frames, None)
+    if first_frame is None:
         return None, []
-    height, width = frames[0].shape[:2]
-    first = Image.fromarray(cv2.cvtColor(frames[0], cv2.COLOR_BGR2RGB))
-    start = sorted(_detect(frames[0]), key=lambda f: f[0])
+    height, width = first_frame.shape[:2]
+    first = Image.fromarray(cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB))
+    start = sorted(_detect(first_frame), key=lambda f: f[0])
+    sampled = 1
     # Follow each person through the clip: [x0, y0, x1, y1] covering everywhere their face goes.
     last = [f[:4].copy() for f in start]
     spans = [[f[0], f[1], f[0] + f[2], f[1] + f[3]] for f in start]
     hits = [1] * len(start)
-    for frame in frames[1:]:
+    for frame in frames:
+        sampled += 1
         found = _detect(frame)
         for i, box in enumerate(last):
             cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
@@ -87,7 +94,7 @@ def find_people(clip: bytes) -> tuple[Image.Image | None, list[dict]]:
         w, h = _even(min(width, right) - x), _even(height - y)
         ok = separable and w >= 1.5 * fw and h >= 2 * fh
         people.append({"face": tuple(int(v) for v in face[:4]), "box": (x, y, w, h) if ok else None,
-                       "seen": hits[i] / len(frames)})
+                       "seen": hits[i] / sampled})
     return first, people
 
 
