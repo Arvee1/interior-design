@@ -72,15 +72,19 @@ def _jpeg_file(image_b64: str) -> io.BytesIO:
     return f
 
 
-def edit_image(image_b64: str, prompt: str, model: str | None = None) -> bytes:
+def edit_image(image_b64: str, prompt: str, model: str | None = None,
+               extra_images: list[str] | None = None) -> bytes:
     """Edit a photo with a Replicate image-editing model (FLUX Kontext by default); returns JPEG bytes.
-    Also supports Google's Nano Banana models, which take the photo as a list in `image_input`."""
+    Also supports Google's Nano Banana models, which take the photo as a list in `image_input`.
+    `extra_images` (base64 JPEGs, Nano Banana only) go in after the main photo, e.g. extra people to add."""
     import replicate
 
     model = model or os.getenv("RESTYLE_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
     params = {"prompt": prompt, "aspect_ratio": "match_input_image", "output_format": "jpg"}
     if model.startswith("google/nano-banana"):
-        params["image_input"] = [_jpeg_file(image_b64)]
+        params["image_input"] = [_jpeg_file(b) for b in [image_b64, *(extra_images or [])]]
+    elif extra_images:
+        raise ValueError(f"{model} takes only one photo; adding people needs a google/nano-banana model.")
     else:
         params["input_image"] = _jpeg_file(image_b64)
     out = replicate.run(model, input=params)

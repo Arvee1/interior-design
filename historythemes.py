@@ -106,6 +106,31 @@ THEMES: dict[str, dict[str, tuple[str, str, str, str]]] = {
         "Fairytale Royalty": ("🧚", "fairytale royal outfits: ball gowns and princely jackets with gold "
                               "embroidery, capes and crowns", "crowns and tiaras", "an enchanted castle ballroom"),
     },
+    "Christmas": {
+        "Santa & Mrs Claus": ("🎅", "classic Santa Claus and Mrs Claus outfits: red velvet suits and dresses "
+                              "trimmed with white fur, wide black belts with gold buckles, black boots and "
+                              "white gloves", "red Santa hats with white pom-poms and round gold spectacles",
+                              "Santa's cosy workshop with a roaring fireplace, stockings and a decorated tree"),
+        "Christmas Elves": ("🧝", "playful Christmas elf outfits: green and red tunics with jingle-bell "
+                            "trims, striped red-and-white tights or trousers, and curly-toed boots",
+                            "pointy elf hats with bells and pointed elf ears",
+                            "the North Pole toy workshop full of wrapped presents"),
+        "Christmas Jumpers": ("🧶", "festive knitted Christmas jumpers with reindeer, snowflakes and "
+                              "Christmas trees, worn with jeans and cosy boots",
+                              "reindeer-antler headbands and Santa hats",
+                              "a living room with a twinkling Christmas tree and presents"),
+        "Nutcracker Ballet": ("🩰", "Nutcracker ballet costumes: red and gold toy-soldier jackets with "
+                              "epaulettes and brass buttons, and sugar-plum-fairy tutus in pink and silver",
+                              "tall soldier shakos and sparkling tiaras",
+                              "a grand theatre stage set with a giant Christmas tree"),
+        "Victorian Christmas": ("🕯️", "Victorian Christmas carol outfits: long wool coats and capes, "
+                                "plaid scarves, velvet gowns with muffs, and waistcoats with top coats",
+                                "bonnets, top hats and earmuffs",
+                                "a snowy Victorian street with gas lamps and carollers"),
+        "Aussie Christmas": ("🏖️", "Aussie summer Christmas outfits: Christmas-print board shorts and "
+                             "sundresses, festive Hawaiian shirts in red and green, and thongs (flip-flops)",
+                             "Santa hats and tinsel", "a sunny Australian beach decorated for Christmas"),
+    },
 }
 ALL_THEMES = {name: t for group in THEMES.values() for name, t in group.items()}
 
@@ -182,12 +207,34 @@ SPORTS: dict[str, dict] = {
 
 
 IMAGE_MODEL = "google/nano-banana-2"  # keeps people recognisable; override with HISTORYTHEMES_IMAGE_MODEL
+MAX_EXTRA_PEOPLE = 3  # photos of people who weren't there, to add into the group
 
 
-def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, change_background: bool) -> str:
+def image_model() -> str:
+    return os.getenv("HISTORYTHEMES_IMAGE_MODEL", IMAGE_MODEL)
+
+
+def add_people_prompt(n: int) -> str:
+    """Instruction for blending people from extra photos into the main one (image 1)."""
+    who = "the person" if n == 1 else f"the {n} people"
+    sources = "image 2" if n == 1 else f"images 2 to {n + 1}"
+    return (
+        f"The first image is the main group photo. Add {who} shown in {sources} into the main photo so they "
+        "look like they were really there: standing or sitting naturally next to the others as part of the "
+        "group, at a matching size and distance from the camera, with the same lighting, shadows, colour, "
+        "focus and grain. Keep each added person's face and identity exactly as in their own photo. Only the "
+        "main photo's scene is kept: ignore the backgrounds of the other images. Widen the group slightly "
+        "if needed to make room, but don't crop anyone out."
+    )
+
+
+def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, change_background: bool,
+                 added: int = 0) -> str:
     """Edit instruction for the image model: dress everyone head to toe in the theme, swap every
-    item that doesn't fit it, and keep each person's face and identity exactly as they are."""
-    parts = [
+    item that doesn't fit it, and keep each person's face and identity exactly as they are.
+    `added` is how many extra people (from extra photos) to blend into the group first."""
+    parts = [add_people_prompt(added)] if added else []
+    parts += [
         f"Restyle this photo so every person is dressed head to toe in {outfit}. Replace every item of "
         "clothing and every accessory that doesn't belong to this theme, including hats, caps, beanies, "
         "sunglasses, headphones, watches, bags, lanyards, other logos and everyday shoes: swap each one for "
@@ -202,8 +249,9 @@ def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, cha
     parts.append(
         "Keep every person's face and identity exactly as in the original photo: the same face shape, eyes, "
         "nose, mouth, skin tone, age and expression, so each person is instantly recognisable as themselves. "
-        "Keep the same number of people in the same poses, positions and body shapes, with the same camera "
-        "angle, framing and lighting. Outfits are complete, well-fitted, modest and age-appropriate, like a "
+        + ("Keep the original people in the same poses and body shapes, plus the added people, "
+           if added else "Keep the same number of people in the same poses, positions and body shapes, ")
+        + "with the same camera angle, framing and lighting. Outfits are complete, well-fitted, modest and age-appropriate, like a "
         "high-quality costume photo shoot. Photorealistic, no text."
     )
     return " ".join(parts)
@@ -266,13 +314,14 @@ def quota_left(kind: str) -> int:
 
 
 for k, v in {"image_b64": None, "image": None, "file_sig": None, "results": [], "pending": False,
-             "error": None, "upload_n": 0}.items():
+             "error": None, "upload_n": 0, "extras": [], "extra_n": 0}.items():
     S.setdefault(k, v)
 
 
 def new_photo():
     S.image_b64 = S.image = S.file_sig = None
     S.results = []
+    S.extras = []
     S.upload_n += 1  # fresh uploader, so the old photo isn't counted again
 
 
@@ -318,11 +367,13 @@ if S.pending:
             raise RuntimeError(f"you've used all {usage.limits['images']} themed pictures.")
         if not os.getenv("REPLICATE_API_TOKEN"):
             raise RuntimeError("add REPLICATE_API_TOKEN in .env or Streamlit secrets.")
-        with st.spinner(f"Dressing everyone for {job['theme']}. This takes about 10-20 seconds..."):
-            img = edit_image(S.image_b64, job["prompt"], os.getenv("HISTORYTHEMES_IMAGE_MODEL", IMAGE_MODEL))
+        extras = [b64 for b64, _ in S.extras][:job["added"]]
+        with st.spinner(f"{job['theme']}: this takes about 10-20 seconds..."):
+            img = edit_image(S.image_b64, job["prompt"], image_model(), extra_images=extras)
         usage.record(S.user, "images")
         faces = None
-        if S.get("opt_faces", False):
+        # Skip pasting faces back when people were added: everyone may have shuffled along to make room.
+        if S.get("opt_faces", False) and not extras:
             try:
                 img, faces = keep_faces(S.image, img)
             except Exception:  # never lose a paid-for picture over the face step
@@ -334,7 +385,7 @@ if S.pending:
 
 
 def queue(theme: str, prompt: str):
-    S.job = {"theme": theme, "prompt": prompt}
+    S.job = {"theme": theme, "prompt": prompt, "added": len(S.extras)}
     S.pending = True
 
 
@@ -363,6 +414,34 @@ if S.image is None:
 photo_col, pick_col = st.columns([1, 1.2], gap="large")
 with photo_col:
     st.image(S.image, caption="Your photo")
+    with st.expander("➕ Add someone who isn't in the photo", expanded=bool(S.extras)):
+        if not image_model().startswith("google/nano-banana"):
+            st.info("Adding people needs a Nano Banana image model (google/nano-banana...).")
+        else:
+            st.caption(f"Upload a photo of up to {MAX_EXTRA_PEOPLE} people who weren't there, one person per "
+                       "photo. They'll be added into the group as if they were in the picture. A clear, "
+                       "front-on photo works best. Each photo counts as an upload.")
+            if S.extras:
+                cols = st.columns(MAX_EXTRA_PEOPLE)
+                for i, (_, im) in enumerate(S.extras):
+                    cols[i].image(im, use_container_width=True)
+                    if cols[i].button("Remove", key=f"rm_extra_{i}_{len(S.extras)}", use_container_width=True):
+                        S.extras.pop(i)
+                        st.rerun()
+            room = MAX_EXTRA_PEOPLE - len(S.extras)
+            if room and quota_left("uploads"):
+                extra = st.file_uploader("Photo of the person to add", type=["jpg", "jpeg", "png", "webp"],
+                                         key=f"extra_{S.extra_n}")
+                if extra:
+                    try:
+                        S.extras.append(prepare_image(extra.getvalue()))
+                        usage.record(S.user, "uploads")
+                    except Exception:
+                        S.error = "That photo couldn't be opened. Try a JPEG or PNG."
+                    S.extra_n += 1  # fresh uploader, so the same photo isn't added twice
+                    st.rerun()
+            elif room:
+                st.warning(f"You've used all {usage.limits['uploads']} photo uploads.")
 
 with pick_col:
     st.subheader("Pick a theme")
@@ -382,22 +461,29 @@ with pick_col:
     if custom.strip():
         label = custom.strip()[:80]
         prompt = theme_prompt(f"{label} costumes", f"hairstyles and accessories that suit {label}",
-                              f"a setting that suits {label}", S.opt_hair, S.opt_background)
+                              f"a setting that suits {label}", S.opt_hair, S.opt_background, len(S.extras))
     elif team:
         label = team
         s_ = SPORTS[sport]
         outfit = (f"the {team} {s_['kit']}, in the team's colours ({s_['teams'][team]}), with the team name "
                   f"'{team}' on the front")
-        prompt = theme_prompt(outfit, s_["hair"], s_["background"], S.opt_hair, S.opt_background)
+        prompt = theme_prompt(outfit, s_["hair"], s_["background"], S.opt_hair, S.opt_background,
+                              len(S.extras))
     elif theme:
         label = theme
         _, outfit, hair, background = THEMES[group][theme]
-        prompt = theme_prompt(outfit, hair, background, S.opt_hair, S.opt_background)
+        prompt = theme_prompt(outfit, hair, background, S.opt_hair, S.opt_background, len(S.extras))
     else:
         label = prompt = None
     left = quota_left("images")
     st.button(f"Dress them for {label}" if label else "Pick a theme first", type="primary",
               use_container_width=True, disabled=not label or not left, on_click=queue, args=(label, prompt))
+    if S.extras:
+        n = len(S.extras)
+        just_add = (add_people_prompt(n) + " Don't change anyone's clothes, hair or the background. "
+                    "Photorealistic, no text.")
+        st.button(f"Just add {'them' if n > 1 else 'this person'} (no costume change)", use_container_width=True,
+                  disabled=not left, on_click=queue, args=(f"{n} added", just_add))
     st.caption(f"{left} themed pictures left." if left
                else f"You've used all {usage.limits['images']} themed pictures.")
 
