@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from restyle.agent import edit_image, prepare_image  # noqa: E402
-from restyle.faces import keep_faces  # noqa: E402
+from restyle.faces import has_face, keep_faces  # noqa: E402
 from restyle.usage import Tracker  # noqa: E402
 
 st.set_page_config(page_title="History Themes", page_icon="🎭", layout="wide")
@@ -208,18 +208,38 @@ SPORTS: dict[str, dict] = {
 
 IMAGE_MODEL = "google/nano-banana-2"  # keeps people recognisable; override with HISTORYTHEMES_IMAGE_MODEL
 MAX_EXTRA_PEOPLE = 3  # photos of people who weren't there, to add into the group
+MAX_REFERENCES = 4  # close-up face photos of people already in the picture
 
 
 def image_model() -> str:
     return os.getenv("HISTORYTHEMES_IMAGE_MODEL", IMAGE_MODEL)
 
 
-def add_people_prompt(n: int) -> str:
-    """Instruction for blending people from extra photos into the main one (image 1)."""
-    who = "the person" if n == 1 else f"the {n} people"
-    sources = "image 2" if n == 1 else f"images 2 to {n + 1}"
+def people_prompt(added: int, refs: list[str]) -> str:
+    """What the extra images are. Image 1 is the main photo, then `added` photos of people to add,
+    then one reference close-up per entry in `refs` (each a note on who it is, possibly blank)."""
+    parts = ["The first image is the main group photo."]
+    if added:
+        who = "the person" if added == 1 else f"the {added} people"
+        sources = "image 2" if added == 1 else f"images 2 to {added + 1}"
+        parts.append(_add_people(who, sources))
+    if refs:
+        for k, note in enumerate(refs, start=added + 2):
+            parts.append(f"Image {k} is a close-up reference photo of "
+                         + (f"{note.strip()}, who is already in the main photo." if note.strip()
+                            else "one of the people already in the main photo."))
+        parts.append(
+            "Reference photos are of people who are already in the main photo: don't add them as new people. "
+            "Use each reference to make that person's face match it exactly (the same face shape, eyes, nose, "
+            "mouth, skin tone and age) from whatever angle they are seen in the main photo, including side-on, "
+            "turned-away and partly hidden faces. Keep their head angle and pose as in the main photo."
+        )
+    return " ".join(parts)
+
+
+def _add_people(who: str, sources: str) -> str:
     return (
-        f"The first image is the main group photo. Add {who} shown in {sources} into the main photo so they "
+        f"Add {who} shown in {sources} into the main photo so they "
         "look like they were really there: standing or sitting naturally next to the others as part of the "
         "group, at a matching size and distance from the camera, with the same lighting, shadows, colour, "
         "focus and grain. Keep each added person's face and identity exactly as in their own photo. Only the "
@@ -229,11 +249,12 @@ def add_people_prompt(n: int) -> str:
 
 
 def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, change_background: bool,
-                 added: int = 0) -> str:
+                 added: int = 0, refs: list[str] | None = None) -> str:
     """Edit instruction for the image model: dress everyone head to toe in the theme, swap every
     item that doesn't fit it, and keep each person's face and identity exactly as they are.
-    `added` is how many extra people (from extra photos) to blend into the group first."""
-    parts = [add_people_prompt(added)] if added else []
+    `added` is how many extra people (from extra photos) to blend into the group first; `refs` are
+    notes on who each reference face photo is (see people_prompt)."""
+    parts = [people_prompt(added, refs or [])] if added or refs else []
     parts += [
         f"Restyle this photo so every person is dressed head to toe in {outfit}. Replace every item of "
         "clothing and every accessory that doesn't belong to this theme, including hats, caps, beanies, "
@@ -314,7 +335,7 @@ def quota_left(kind: str) -> int:
 
 
 for k, v in {"image_b64": None, "image": None, "file_sig": None, "results": [], "pending": False,
-             "error": None, "upload_n": 0, "extras": [], "extra_n": 0}.items():
+             "error": None, "upload_n": 0, "extras": [], "extra_n": 0, "refs": [], "ref_n": 0}.items():
     S.setdefault(k, v)
 
 
@@ -322,15 +343,17 @@ def new_photo():
     S.image_b64 = S.image = S.file_sig = None
     S.results = []
     S.extras = []
+    S.refs = []
     S.upload_n += 1  # fresh uploader, so the old photo isn't counted again
 
 
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
     st.header("Options")
-    st.toggle("Paste original faces back", value=False, key="opt_faces",
-              help="The image model already keeps faces. Turn this on only if a face drifts: each person's "
-                   "original face is blended back in, which can look less natural.")
+    st.toggle("Keep everyone's real face", value=True, key="opt_faces",
+              help="After the picture is made, each person's real face (from your photo, the photo of "
+                   "someone you added, or their reference face photo) is blended back onto them, so faces "
+                   "aren't changed by the AI. Turn off if a blended face looks out of place.")
     st.toggle("Change hairstyles and accessories too", value=False, key="opt_hair",
               help="More fun, but the bigger the change, the more faces can drift.")
     st.toggle("Change the background to match", value=False, key="opt_background")
@@ -367,15 +390,15 @@ if S.pending:
             raise RuntimeError(f"you've used all {usage.limits['images']} themed pictures.")
         if not os.getenv("REPLICATE_API_TOKEN"):
             raise RuntimeError("add REPLICATE_API_TOKEN in .env or Streamlit secrets.")
-        extras = [b64 for b64, _ in S.extras][:job["added"]]
+        extras, refs = S.extras[:job["added"]], S.refs[:job["refs"]]
         with st.spinner(f"{job['theme']}: this takes about 10-20 seconds..."):
-            img = edit_image(S.image_b64, job["prompt"], image_model(), extra_images=extras)
+            img = edit_image(S.image_b64, job["prompt"], image_model(),
+                             extra_images=[b64 for b64, _ in extras] + [r["b64"] for r in refs])
         usage.record(S.user, "images")
         faces = None
-        # Skip pasting faces back when people were added: everyone may have shuffled along to make room.
-        if S.get("opt_faces", False) and not extras:
+        if S.get("opt_faces", True):
             try:
-                img, faces = keep_faces(S.image, img)
+                img, faces = keep_faces(S.image, img, [im for _, im in extras], [r["image"] for r in refs])
             except Exception:  # never lose a paid-for picture over the face step
                 faces = None
         S.results.insert(0, {**job, "image": img, "faces": faces})
@@ -385,7 +408,7 @@ if S.pending:
 
 
 def queue(theme: str, prompt: str):
-    S.job = {"theme": theme, "prompt": prompt, "added": len(S.extras)}
+    S.job = {"theme": theme, "prompt": prompt, "added": len(S.extras), "refs": len(S.refs)}
     S.pending = True
 
 
@@ -442,6 +465,40 @@ with photo_col:
                     st.rerun()
             elif room:
                 st.warning(f"You've used all {usage.limits['uploads']} photo uploads.")
+    with st.expander("🙂 Reference face photos (if someone doesn't look like themselves)", expanded=bool(S.refs)):
+        if not image_model().startswith("google/nano-banana"):
+            st.info("Reference faces need a Nano Banana image model (google/nano-banana...).")
+        else:
+            st.caption("For people who are **already in the photo** but come out not looking like themselves, "
+                       "especially side-on faces. Upload a clear, front-on, well-lit close-up of that person, "
+                       "one person per photo, and say which one they are. Each photo counts as an upload.")
+            for i, r in enumerate(S.refs):
+                pic, info = st.columns([1, 3])
+                pic.image(r["image"], use_container_width=True)
+                r["who"] = info.text_input("Who is this?", value=r["who"], key=f"ref_who_{r['id']}",
+                                           placeholder="e.g. the man on the left in the blue shirt")
+                if info.button("Remove", key=f"rm_ref_{r['id']}"):
+                    S.refs.pop(i)
+                    st.rerun()
+            if len(S.refs) < MAX_REFERENCES and quota_left("uploads"):
+                ref = st.file_uploader("Close-up photo of their face", type=["jpg", "jpeg", "png", "webp"],
+                                       key=f"ref_{S.ref_n}")
+                if ref:
+                    try:
+                        b64, im = prepare_image(ref.getvalue())
+                    except Exception:
+                        S.error = "That photo couldn't be opened. Try a JPEG or PNG."
+                    else:
+                        if has_face(im):
+                            S.refs.append({"id": S.ref_n, "b64": b64, "image": im, "who": ""})
+                            usage.record(S.user, "uploads")
+                        else:
+                            S.error = ("Couldn't find a face in that reference photo, so it wasn't used. "
+                                       "Try a clear, front-on close-up.")
+                    S.ref_n += 1  # fresh uploader, so the same photo isn't added twice
+                    st.rerun()
+            elif len(S.refs) < MAX_REFERENCES:
+                st.warning(f"You've used all {usage.limits['uploads']} photo uploads.")
 
 with pick_col:
     st.subheader("Pick a theme")
@@ -458,32 +515,34 @@ with pick_col:
                          format_func=lambda n: f"{THEMES[group][n][0]} {n}")
     custom = st.text_input("Or describe your own theme",
                            placeholder="e.g. 1940s Hollywood glamour, or superheroes in a comic book")
+    people = (len(S.extras), [r["who"] for r in S.refs])
     if custom.strip():
         label = custom.strip()[:80]
         prompt = theme_prompt(f"{label} costumes", f"hairstyles and accessories that suit {label}",
-                              f"a setting that suits {label}", S.opt_hair, S.opt_background, len(S.extras))
+                              f"a setting that suits {label}", S.opt_hair, S.opt_background, *people)
     elif team:
         label = team
         s_ = SPORTS[sport]
         outfit = (f"the {team} {s_['kit']}, in the team's colours ({s_['teams'][team]}), with the team name "
                   f"'{team}' on the front")
-        prompt = theme_prompt(outfit, s_["hair"], s_["background"], S.opt_hair, S.opt_background,
-                              len(S.extras))
+        prompt = theme_prompt(outfit, s_["hair"], s_["background"], S.opt_hair, S.opt_background, *people)
     elif theme:
         label = theme
         _, outfit, hair, background = THEMES[group][theme]
-        prompt = theme_prompt(outfit, hair, background, S.opt_hair, S.opt_background, len(S.extras))
+        prompt = theme_prompt(outfit, hair, background, S.opt_hair, S.opt_background, *people)
     else:
         label = prompt = None
     left = quota_left("images")
     st.button(f"Dress them for {label}" if label else "Pick a theme first", type="primary",
               use_container_width=True, disabled=not label or not left, on_click=queue, args=(label, prompt))
-    if S.extras:
+    if S.extras or S.refs:
         n = len(S.extras)
-        just_add = (add_people_prompt(n) + " Don't change anyone's clothes, hair or the background. "
-                    "Photorealistic, no text.")
-        st.button(f"Just add {'them' if n > 1 else 'this person'} (no costume change)", use_container_width=True,
-                  disabled=not left, on_click=queue, args=(f"{n} added", just_add))
+        doing = [f"add {'them' if n > 1 else 'this person'}"] * bool(n) + ["fix faces"] * bool(S.refs)
+        just = (people_prompt(*people) + " Don't change anyone's clothes, hair or the background. Keep every "
+                "face recognisably the same person. Photorealistic, no text.")
+        st.button(f"Just {' and '.join(doing)} (no costume change)", use_container_width=True,
+                  disabled=not left, on_click=queue,
+                  args=(" and ".join(doing).replace("this person", "1 person").capitalize(), just))
     st.caption(f"{left} themed pictures left." if left
                else f"You've used all {usage.limits['images']} themed pictures.")
 
