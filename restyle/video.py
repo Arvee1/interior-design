@@ -238,12 +238,13 @@ def cut_out_person(person_jpeg: bytes) -> bytes:
 
 
 def replace_person(clip: bytes, person_jpeg: bytes, resolution: str = "720",
-                   box: tuple[int, int, int, int] | None = None) -> bytes:
+                   box: tuple[int, int, int, int] | None = None, extra: dict | None = None) -> bytes:
     """Replace a person in the clip with the person in the photo (Wan 2.2 Animate Replace).
     They keep doing and saying the same thing; background, camera and sound stay.
 
     The model replaces everyone it sees, so when `box` (x, y, w, h) is given, only that part of the
-    frame is sent to it and the result is pasted back, leaving the other people untouched."""
+    frame is sent to it and the result is pasted back, leaving the other people untouched.
+    `extra` adds other model inputs, e.g. {"go_fast": True, "seed": 42}."""
     import replicate
 
     from .people import crop_clip, paste_back
@@ -254,6 +255,7 @@ def replace_person(clip: bytes, person_jpeg: bytes, resolution: str = "720",
         "character_image": _named(cut_out_person(person_jpeg), "person.jpg"),
         "resolution": resolution if resolution in ("480", "720") else "720",
         "merge_audio": True,
+        **(extra or {}),
     })
     result = _read_video(out)
     if box:
