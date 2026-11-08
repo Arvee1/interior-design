@@ -1,9 +1,9 @@
-"""Put the original faces back onto an AI-edited photo, so people still look like themselves.
+"""Put the original faces back onto an AI-edited photo, so people's faces are the real ones.
 
 Image-editing models redraw faces even when told not to. After the edit we find each face in the
 original photo, find the same person's face in the edited photo, line the original up with it using
-the eye, nose and mouth points, and blend it in with Poisson (seamless) cloning so skin tone and
-lighting match the new picture.
+the eye, nose and mouth points, and lay the original face pixels over it with softly faded edges.
+Faces are only put back where the head is still in the same pose, so features always line up.
 """
 
 from pathlib import Path
@@ -68,27 +68,45 @@ def _identity_pairs(sources: list[tuple[np.ndarray, np.ndarray]], out: np.ndarra
 
 
 
+_MAX_MISALIGN = 0.08  # worst landmark error as a share of face width; above this the head has turned
+_MAX_TURN = 0.12  # change in how far the nose sits off-centre between the eyes (head turned left/right)
+
+
+def _turn(face) -> float:
+    """How far the head is turned: the nose's offset from between the eyes, as a share of eye distance."""
+    (rx, _), (lx, _), (nx, _) = face[4:6], face[6:8], face[8:10]
+    return (nx - (rx + lx) / 2) / max(abs(lx - rx), 1.0)
+
+
 def _paste(src: np.ndarray, face: np.ndarray, out: np.ndarray, target: np.ndarray) -> np.ndarray | None:
-    """Blend src's face onto out's target face; None if it can't be done."""
+    """Lay src's real face over out's target face; None if the poses don't line up."""
     h, w = out.shape[:2]
-    # Line the original face up with the new one using the eye, nose and mouth points.
-    m, _ = cv2.estimateAffinePartial2D(face[4:14].reshape(5, 2), target[4:14].reshape(5, 2))
+    # Line the original face up with the new one using the eye, nose and mouth points
+    # (move, scale and rotate only, so the face itself is never stretched).
+    pts, dst = face[4:14].reshape(5, 2), target[4:14].reshape(5, 2)
+    m, _ = cv2.estimateAffinePartial2D(pts, dst, method=cv2.LMEDS)
     if m is None:
         return None
+    moved = pts @ m[:, :2].T + m[:, 2]
+    tx, ty, tw, th = target[:4]
+    if (np.linalg.norm(moved - dst, axis=1).max() > _MAX_MISALIGN * tw
+            or abs(_turn(face) - _turn(target)) > _MAX_TURN):
+        return None  # the head is at a different angle now: pasting would look wrong
     warped = cv2.warpAffine(src, m, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
-    # Inner face only (brows to chin), so new hats, hair and collars around it are kept.
-    tx, ty, tw, th = (int(v) for v in target[:4])
-    mask = np.zeros((h, w), np.uint8)
-    cv2.ellipse(mask, (tx + tw // 2, ty + int(th * 0.56)), (int(tw * 0.40), int(th * 0.43)), 0, 0, 360, 255, -1)
-    mask[[0, -1], :] = mask[:, [0, -1]] = 0  # seamlessClone needs a margin at the photo's edge
-    ys, xs = np.nonzero(mask)
-    if not len(xs):
+    # Brows to chin, with a soft fade at the edge so new hats, hair and collars around it are kept.
+    mask = np.zeros((h, w), np.float32)
+    cv2.ellipse(mask, (int(tx + tw / 2), int(ty + th * 0.55)), (int(tw * 0.40), int(th * 0.44)),
+                0, 0, 360, 1.0, -1)
+    if not mask.any():
         return None
-    centre = ((xs.min() + xs.max()) // 2, (ys.min() + ys.max()) // 2)
-    try:
-        return cv2.seamlessClone(warped, out, mask, centre, cv2.NORMAL_CLONE)
-    except cv2.error:  # face too close to the edge of the photo to blend
-        return None
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(1.0, tw * 0.06))
+    # Only a gentle brightness/colour match, in case the new scene is lit differently; features are untouched.
+    core = mask > 0.9
+    if core.any():
+        gain = out[core].mean(axis=0) / np.maximum(warped[core].mean(axis=0), 1)
+        warped = np.clip(warped * np.clip(gain, 0.92, 1.08), 0, 255)
+    a = mask[..., None]
+    return (warped * a + out * (1 - a)).astype(np.uint8)
 
 
 def _bgr(img: Image.Image) -> np.ndarray:
@@ -101,27 +119,16 @@ def _main_face(img: np.ndarray):
     return max(found, key=lambda f: f[2] * f[3]) if found else None
 
 
-def _frontal(face) -> bool:
-    """Roughly facing the camera: the nose sits near the middle of the eyes."""
-    (rx, _), (lx, _), (nx, _) = face[4:6], face[6:8], face[8:10]
-    eyes = abs(lx - rx)
-    return eyes > 0 and abs(nx - (rx + lx) / 2) / eyes < 0.2
-
-
 def has_face(img: Image.Image) -> bool:
     """Whether a photo has a face we can find (for checking reference photos on upload)."""
     return _main_face(_bgr(img)) is not None
 
 
-def keep_faces(original: Image.Image, edited: bytes, extras: list[Image.Image] | None = None,
-               references: list[Image.Image] | None = None) -> tuple[bytes, int]:
-    """Return (JPEG bytes of the edited photo with original faces restored, number of faces restored).
+def keep_faces(original: Image.Image, edited: bytes, people_added: bool = False) -> tuple[bytes, int]:
+    """Return (JPEG bytes of the edited photo with original faces put back, number of faces put back).
 
-    `extras` are photos of people who were added into the picture (one person each); their faces are
-    put back too. Faces are matched by who they are, falling back to position when no one was added.
-    `references` are close-ups of people already in the photo. They're used for anyone whose face in
-    the original couldn't be used (side-on, hidden, too small), but only where the new picture shows
-    that person roughly facing the camera: a front-on face pasted onto a side view would look wrong."""
+    Only faces from the original photo are used. Faces are matched by who they are, and also by
+    position unless `people_added` (then everyone may have shuffled along to make room)."""
     orig = _bgr(original)
     h, w = orig.shape[:2]
     out = cv2.imdecode(np.frombuffer(edited, np.uint8), cv2.IMREAD_COLOR)
@@ -130,25 +137,14 @@ def keep_faces(original: Image.Image, edited: bytes, extras: list[Image.Image] |
     out = cv2.resize(out, (w, h), interpolation=cv2.INTER_LANCZOS4)  # same frame as the original
     targets = _detect(out)
     sources = [(orig, f) for f in _detect(orig)]
-    for extra in extras or []:
-        img = _bgr(extra)
-        face = _main_face(img)
-        if face is not None:
-            sources.append((img, face))
-    refs = []
-    for ref in references or []:
-        img = _bgr(ref)
-        face = _main_face(img)
-        if face is not None:
-            refs.append((img, face))
-    if not (sources or refs) or not targets:
+    if not sources or not targets:
         return edited, 0
 
     try:
-        pairs = _identity_pairs(sources, out, targets) if sources else {}
+        pairs = _identity_pairs(sources, out, targets)
     except cv2.error:
         pairs = {}
-    if not extras:  # no one added, so anyone not recognised is still where they were
+    if not people_added:  # anyone not recognised is still where they were
         used = set(pairs.values())
         for i, (_, face) in enumerate(sources):
             if i not in pairs:
@@ -158,22 +154,13 @@ def keep_faces(original: Image.Image, edited: bytes, extras: list[Image.Image] |
                     pairs[i] = j
                     used.add(j)
 
-    # Reference close-ups fill in for people still without a face, where they now face the camera.
-    free = [j for j in range(len(targets)) if j not in pairs.values() and _frontal(targets[j])]
-    if refs and free:
-        try:
-            ref_pairs = _identity_pairs(refs, out, [targets[j] for j in free])
-        except cv2.error:
-            ref_pairs = {}
-        for i, k in ref_pairs.items():
-            pairs[len(sources) + i] = free[k]
-    sources = sources + refs
-
     restored = 0
     for i, j in pairs.items():
         src, face = sources[i]
         blended = _paste(src, face, out, targets[j])
         if blended is not None:
             out, restored = blended, restored + 1
-    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not restored:
+        return edited, 0  # nothing changed: keep the model's picture as it came
+    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return (buf.tobytes() if ok else edited), restored

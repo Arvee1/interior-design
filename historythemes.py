@@ -270,6 +270,8 @@ def theme_prompt(outfit: str, hair: str, background: str, change_hair: bool, cha
     parts.append(
         "Keep every person's face and identity exactly as in the original photo: the same face shape, eyes, "
         "nose, mouth, skin tone, age and expression, so each person is instantly recognisable as themselves. "
+        "Leave the original people's faces untouched: don't redraw, retouch, smooth, slim, beautify or "
+        "re-light them, and don't turn or tilt anyone's head. "
         + ("Keep the original people in the same poses and body shapes, plus the added people, "
            if added else "Keep the same number of people in the same poses, positions and body shapes, ")
         + "with the same camera angle, framing and lighting. Outfits are complete, well-fitted, modest and age-appropriate, like a "
@@ -351,9 +353,9 @@ def new_photo():
 with st.sidebar:
     st.header("Options")
     st.toggle("Keep everyone's real face", value=True, key="opt_faces",
-              help="After the picture is made, each person's real face (from your photo, the photo of "
-                   "someone you added, or their reference face photo) is blended back onto them, so faces "
-                   "aren't changed by the AI. Turn off if a blended face looks out of place.")
+              help="After the picture is made, each person's real face from your photo is put back "
+                   "exactly, wherever their head is still at the same angle. Faces the AI turned or "
+                   "moved are left as the AI drew them.")
     st.toggle("Change hairstyles and accessories too", value=False, key="opt_hair",
               help="More fun, but the bigger the change, the more faces can drift.")
     st.toggle("Change the background to match", value=False, key="opt_background")
@@ -398,7 +400,7 @@ if S.pending:
         faces = None
         if S.get("opt_faces", True):
             try:
-                img, faces = keep_faces(S.image, img, [im for _, im in extras], [r["image"] for r in refs])
+                img, faces = keep_faces(S.image, img, people_added=bool(extras))
             except Exception:  # never lose a paid-for picture over the face step
                 faces = None
         S.results.insert(0, {**job, "image": img, "faces": faces})
@@ -557,7 +559,8 @@ if S.results:
         if r.get("faces"):
             after.caption(f"Kept {r['faces']} original face{'s' if r['faces'] != 1 else ''}.")
         elif r.get("faces") == 0:
-            after.caption("Couldn't find faces to keep in this one (side-on or small faces are harder).")
+            after.caption("Faces here are as the AI drew them: none could be lined up with your photo "
+                          "(side-on, small or turned heads). Try again, or add a reference face photo.")
         after.download_button("Download", r["image"], mime="image/jpeg", key=f"dl_{n}_{len(S.results)}",
                               file_name=f"{r['theme'].lower().replace(' ', '-')}-{datetime.now():%Y%m%d-%H%M%S}.jpg")
     st.caption("AI-generated. If a face still looks off, try again: each go is a little different.")
