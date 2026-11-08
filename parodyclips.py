@@ -47,6 +47,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 load_dotenv()
 
+from restyle.faces import _bgr, _detect as detect_faces  # noqa: E402  (YuNet face detector)
 from restyle.usage import Tracker  # noqa: E402
 
 # ---------------------------------------------------------------- model and limits
@@ -235,6 +236,54 @@ def aspect_warning(photo: Image.Image, info: ClipInfo) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- person checks
+# Wan Animate tracks the person's body and face in every frame. When it can't find one (e.g. the clip
+# opens on an empty shot, the person is tiny or facing away, or the photo has no clear person) it fails
+# with a numpy "zero-size array" error, so we look for faces first and warn before any money is spent.
+def frame_at(path: Path, t: float) -> Image.Image | None:
+    """One frame of the video at time t (seconds), or None."""
+    done = subprocess.run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-ss", f"{max(t, 0):.3f}",
+                           "-i", str(path), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+                          capture_output=True)
+    try:
+        return Image.open(io.BytesIO(done.stdout)).convert("RGB") if done.stdout else None
+    except Exception:
+        return None
+
+
+def count_faces(img: Image.Image) -> int:
+    return len(detect_faces(_bgr(img)))
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def clip_face_check(path: str, start: float, end: float, samples: int = 5) -> tuple[Image.Image | None, int, list[bool]]:
+    """(first frame, faces in the first frame, whether each of `samples` evenly spaced frames has a face)."""
+    first = frame_at(Path(path), start + 0.05)
+    times = [start + 0.05 + (end - start - 0.1) * i / max(samples - 1, 1) for i in range(samples)]
+    found = []
+    for t in times:
+        frame = first if t == times[0] else frame_at(Path(path), t)
+        found.append(bool(frame is not None and count_faces(frame)))
+    return first, (count_faces(first) if first is not None else 0), found
+
+
+def person_warnings(first_faces: int, found: list[bool], photo_faces: int | None) -> list[str]:
+    """Warnings about where the model may not find a person to replace (or to use)."""
+    out = []
+    if not first_faces:
+        out.append("No face found in the **first frame** of the clip. The model needs to see the person "
+                   "from the start: trim so the clip opens with them clearly in view, facing the camera.")
+    elif sum(found) < len(found) / 2:
+        out.append(f"A face was only found in {sum(found)} of {len(found)} sample frames. If the person turns "
+                   "away, leaves the shot or the shot changes, the swap may fail: try a single, steady shot.")
+    if photo_faces == 0:
+        out.append("No face found in the **character photo**. Use a clear photo of one person with their "
+                   "face visible, ideally head to toe.")
+    elif photo_faces and photo_faces > 1:
+        out.append(f"The character photo has {photo_faces} faces. Use a photo of just the one person.")
+    return out
+
+
 # ---------------------------------------------------------------- video processing
 def trim_clip(src: Path, dst: Path, start: float, end: float) -> Path:
     """Cut start..end out of src into an mp4 the model accepts: H.264, square pixels, even size,
@@ -302,6 +351,10 @@ def _friendly(e: Exception) -> str:
         return "Replicate is rate-limiting requests. Wait a minute and try again."
     if any(w in low for w in ("nsfw", "safety", "sensitive", "flagged", "content policy")):
         return ("The model's safety filter rejected this clip or photo. Try a different photo or shot.")
+    if "zero-size array" in low or "no identity" in low or "no person" in low or "no face" in low:
+        return ("The model couldn't find a person to work with, either in the clip (it matters most at the "
+                "start) or in the character photo. Use a single steady shot where the person is clearly in "
+                "view from the first frame, facing the camera, and a clear photo of one person.")
     if "timed out" in low or "timeout" in low:
         return "Replicate took too long to respond. Try again, or try a shorter clip or 480p."
     return f"The swap didn't work: {text[:400]}"
@@ -484,6 +537,11 @@ def render_ui(user: str) -> None:
                                        (0.0, round(min(info.duration, MAX_SECONDS), 1)), step=0.1,
                                        key=f"trim_{src_path.name}")
                 st.caption(f"Keeping {end - start:.1f}s.")
+        face_check = None
+        if info and not validate_clip(info, start, end):
+            face_check = clip_face_check(str(src_path), start, end)
+            if face_check[0] is not None:
+                st.image(face_check[0], width=220, caption="First frame that will be sent")
 
     with photo_col:
         st.subheader("2. Character photo")
@@ -506,6 +564,10 @@ def render_ui(user: str) -> None:
         warn = aspect_warning(photo, info)
         if warn:
             st.warning(warn)
+    if face_check or photo is not None:
+        _, first_faces, found = face_check or (None, 1, [True])
+        for w in person_warnings(first_faces, found, count_faces(photo) if photo is not None else None):
+            st.warning(w, icon="🧍")
     seconds = (end - start) if info else 0.0
     cost_box.metric("This run", _cost(seconds, resolution) if info else "—",
                     help="Estimated from the clip length and resolution.")
