@@ -7,3 +7,5 @@ __pycache__/
 .historythemes_usage.json
 .faceclips_usage.json
 *.mp4
+outputs/
+.parodyclips_usage.json
