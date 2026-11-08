@@ -78,11 +78,50 @@ def _turn(face) -> float:
     return (nx - (rx + lx) / 2) / max(abs(lx - rx), 1.0)
 
 
+_MIN_MATCH = 0.80  # how closely the lined-up real face must match the AI's face (ECC correlation)
+
+
+def _refine(src: np.ndarray, m: np.ndarray, out: np.ndarray, target: np.ndarray) -> np.ndarray | None:
+    """Fine-tune the rough landmark transform `m` (src -> out) by matching the face pixels themselves,
+    so the real face sits exactly where the AI drew it. Returns the refined 2x3 transform, or None
+    if the faces can't be lined up closely (the head was redrawn at a different angle or shape)."""
+    h, w = out.shape[:2]
+    tx, ty, tw, th = target[:4]
+    # A box around the face, in the AI picture's coordinates.
+    x0, y0 = max(int(tx - tw * 0.15), 0), max(int(ty - th * 0.1), 0)
+    x1, y1 = min(int(tx + tw * 1.15), w), min(int(ty + th * 1.05), h)
+    if x1 - x0 < 24 or y1 - y0 < 24:
+        return None
+    # The real face, roughly placed, cut out over the same box.
+    shift = np.float32([[1, 0, -x0], [0, 1, -y0], [0, 0, 1]])
+    rough = shift @ np.vstack([m, [0, 0, 1]])
+    gray = lambda a: cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)  # noqa: E731
+    real = cv2.warpAffine(gray(src), rough[:2], (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REFLECT)
+    ai = gray(out[y0:y1, x0:x1])
+    roi = np.zeros(ai.shape, np.uint8)
+    cv2.ellipse(roi, (int(tx + tw / 2 - x0), int(ty + th * 0.55 - y0)), (int(tw * 0.42), int(th * 0.46)),
+                0, 0, 360, 255, -1)
+    fix = np.eye(2, 3, dtype=np.float32)
+    try:  # fix maps AI-picture points to where they are in the roughly placed real face
+        cc, fix = cv2.findTransformECC(ai, real, fix, cv2.MOTION_AFFINE,
+                                       (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 200, 1e-5), roi, 5)
+    except cv2.error:
+        return None
+    a = fix[:, :2]
+    sv = np.linalg.svd(a, compute_uv=False)
+    if cc < _MIN_MATCH or sv.max() > 1.12 or sv.min() < 0.89 or sv.max() / sv.min() > 1.06 \
+            or np.abs(fix[:, 2]).max() > tw * 0.12:
+        return None  # couldn't line up closely, or only by stretching the face
+    # Real-face point for each AI-picture point: undo the crop shift, apply fix, undo the rough placement.
+    full = np.linalg.inv(rough) @ np.vstack([fix, [0, 0, 1]]) @ shift
+    return full[:2]
+
+
 def _paste(src: np.ndarray, face: np.ndarray, out: np.ndarray, target: np.ndarray) -> np.ndarray | None:
     """Lay src's real face over out's target face; None if the poses don't line up."""
     h, w = out.shape[:2]
-    # Line the original face up with the new one using the eye, nose and mouth points
-    # (move, scale and rotate only, so the face itself is never stretched).
+    # Rough placement from the eye, nose and mouth points (move, scale and rotate only).
     pts, dst = face[4:14].reshape(5, 2), target[4:14].reshape(5, 2)
     m, _ = cv2.estimateAffinePartial2D(pts, dst, method=cv2.LMEDS)
     if m is None:
@@ -92,7 +131,11 @@ def _paste(src: np.ndarray, face: np.ndarray, out: np.ndarray, target: np.ndarra
     if (np.linalg.norm(moved - dst, axis=1).max() > _MAX_MISALIGN * tw
             or abs(_turn(face) - _turn(target)) > _MAX_TURN):
         return None  # the head is at a different angle now: pasting would look wrong
-    warped = cv2.warpAffine(src, m, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
+    inverse = _refine(src, m, out, target)  # exact placement, matched on the face pixels
+    if inverse is None:
+        return None
+    warped = cv2.warpAffine(src, inverse, (w, h), flags=cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP,
+                            borderMode=cv2.BORDER_REFLECT).astype(np.float32)
     # Brows to chin, with a soft fade at the edge so new hats, hair and collars around it are kept.
     mask = np.zeros((h, w), np.float32)
     cv2.ellipse(mask, (int(tx + tw / 2), int(ty + th * 0.55)), (int(tw * 0.40), int(th * 0.44)),
@@ -130,11 +173,11 @@ def keep_faces(original: Image.Image, edited: bytes, people_added: bool = False)
     Only faces from the original photo are used. Faces are matched by who they are, and also by
     position unless `people_added` (then everyone may have shuffled along to make room)."""
     orig = _bgr(original)
-    h, w = orig.shape[:2]
     out = cv2.imdecode(np.frombuffer(edited, np.uint8), cv2.IMREAD_COLOR)
     if out is None:
         return edited, 0
-    out = cv2.resize(out, (w, h), interpolation=cv2.INTER_LANCZOS4)  # same frame as the original
+    # Work in the AI picture's own size and shape: it can differ from the original's (e.g. 4:3 vs 3:2),
+    # and stretching it to match would distort everything, faces included.
     targets = _detect(out)
     sources = [(orig, f) for f in _detect(orig)]
     if not sources or not targets:
@@ -145,10 +188,13 @@ def keep_faces(original: Image.Image, edited: bytes, people_added: bool = False)
     except cv2.error:
         pairs = {}
     if not people_added:  # anyone not recognised is still where they were
+        (oh, ow), (nh, nw) = orig.shape[:2], out.shape[:2]
+        scale = np.ones(15, np.float32)  # original-photo coordinates -> AI-picture coordinates
+        scale[0:14:2], scale[1:14:2] = nw / ow, nh / oh
         used = set(pairs.values())
         for i, (_, face) in enumerate(sources):
             if i not in pairs:
-                t = _match(face, [c for j, c in enumerate(targets) if j not in used])
+                t = _match(face * scale, [c for j, c in enumerate(targets) if j not in used])
                 if t is not None:
                     j = next(j for j, c in enumerate(targets) if c is t)
                     pairs[i] = j
